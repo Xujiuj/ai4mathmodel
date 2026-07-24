@@ -1,0 +1,39 @@
+# Dependencies and local tooling
+node_modules/
+.npm-cache/
+.npmrc
+
+# Generated application and installer payloads
+dist/
+release/
+runtime/
+
+# Private execution implementation and protected build inputs
+electron/main.cjs
+electron/protected/
+electron/supervisor/playbooks.cjs
+electron/supervisor/retry-policy.cjs
+electron/supervisor/supervisor.cjs
+scripts/build-protected-runtime.cjs
+scripts/runtime-lock.json
+scripts/runtime-python-requirements.txt
+tests/release-boundary.test.cjs
+
+# Local application data, diagnostics, and design working files
+*.log
+electron-qa-result.json
+design-*.png
+design-qa.md
+file-tree-implementation.png
+settings-modal-800.png
+packaged-verification.png
+build/*.png
+build/*-prompt.txt
+AGENTS.md
+
+# Credentials and editor state
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
