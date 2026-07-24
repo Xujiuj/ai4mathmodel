@@ -23,7 +23,6 @@ import {
   Play,
   Search,
   Settings,
-  ShieldCheck,
   Sigma,
   Trash2,
   Upload,
@@ -136,7 +135,7 @@ export function AppSidebar({ projects, activeProject, stages, activeStage, onSel
   );
 }
 
-export function ProjectSummary({ project, stages, activeStage, stats, onModels, modelLabel, onFiles, onQuality, sidePanelOpen, sidePanelMode, running, onPrimary }) {
+export function ProjectSummary({ project, stages, activeStage, stats, onModels, modelLabel, onFiles, sidePanelOpen, running, onPrimary }) {
   const items = stages || [];
   const current = items.find((stage) => stage.key === activeStage) || items[0];
   const completed = items.filter((stage) => stage.uiStatus === 'completed').length;
@@ -160,27 +159,24 @@ export function ProjectSummary({ project, stages, activeStage, stats, onModels, 
       </div>
       <div className="summary-actions">
         <button className="model-chip" onClick={onModels} title="配置求解所需模型"><Cpu size={14} /><span>{modelLabel}</span></button>
-        <IconButton className={sidePanelOpen && sidePanelMode === 'files' ? 'active' : ''} label="项目文件" onClick={onFiles}><Files size={16} /></IconButton>
-        <IconButton className={sidePanelOpen && sidePanelMode === 'quality' ? 'active' : ''} label="质量检查" onClick={onQuality}><ShieldCheck size={16} /></IconButton>
+        <IconButton className={sidePanelOpen ? 'active' : ''} label="项目文件" onClick={onFiles}><Files size={16} /></IconButton>
         <CommandButton tone="primary" icon={running ? LoaderCircle : Play} onClick={onPrimary} disabled={running} className={running ? 'is-running' : ''}>{primaryLabel}</CommandButton>
       </div>
     </header>
   );
 }
 
-export function UtilitySidebar({ open, mode, onSelect, onClose, onOpenRuns, running, children }) {
-  const title = mode === 'files' ? '项目资料' : '质量检查';
+export function UtilitySidebar({ open, onClose, onOpenRuns, running, children }) {
   return (
     <aside className={`utility-sidebar ${open ? 'open' : ''}`} aria-label="工作区工具">
       <nav className="utility-rail" aria-label="侧边工具">
-        <IconButton className={open && mode === 'files' ? 'active' : ''} label="项目资料" onClick={() => onSelect('files')}><Files size={17} /></IconButton>
-        <IconButton className={open && mode === 'quality' ? 'active' : ''} label="质量检查" onClick={() => onSelect('quality')}><ShieldCheck size={17} /></IconButton>
+        <IconButton className={open ? 'active' : ''} label="项目资料" onClick={onClose}><Files size={17} /></IconButton>
         <span className="utility-spacer" />
         <IconButton className={running ? 'running' : ''} label="运行记录" onClick={onOpenRuns}><History size={17} /></IconButton>
       </nav>
       {open ? (
         <div className="utility-panel">
-          <header><strong>{title}</strong><IconButton label="收起侧边栏" onClick={onClose}><PanelRightClose size={16} /></IconButton></header>
+          <header><strong>项目资料</strong><IconButton label="收起侧边栏" onClick={onClose}><PanelRightClose size={16} /></IconButton></header>
           <div className="utility-panel-content">{children}</div>
         </div>
       ) : null}

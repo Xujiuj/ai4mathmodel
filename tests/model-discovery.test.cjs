@@ -56,6 +56,21 @@ test('queries Anthropic models with native API headers', async () => {
   assert.equal('Authorization' in request.options.headers, false);
 });
 
+test('queries Anthropic models with a bearer credential when configured', async () => {
+  let request;
+  const fetchImpl = async (url, options) => {
+    request = { url, options };
+    return { ok: true, status: 200, json: async () => ({ data: [{ id: 'claude-test' }] }) };
+  };
+  const result = await discoverModels(
+    { protocol: 'anthropic', authMode: 'bearer', baseUrl: 'https://gateway.example/v1' },
+    { fetchImpl, apiKey: 'anthropic-auth-token' },
+  );
+  assert.deepEqual(result.models, ['claude-test']);
+  assert.equal(request.options.headers.Authorization, 'Bearer anthropic-auth-token');
+  assert.equal('x-api-key' in request.options.headers, false);
+});
+
 test('follows bounded Anthropic model pagination', async () => {
   const requests = [];
   const fetchImpl = async (url) => {

@@ -129,11 +129,12 @@ function providerEndpoint(connection = {}) {
   return `${baseUrl.replace(/\/chat\/completions$/i, '')}/chat/completions`;
 }
 
-function providerHeaders(protocol, apiKey = '') {
+function providerHeaders(protocol, apiKey = '', authMode = 'api-key') {
   const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
   if (protocol === 'anthropic') {
     headers['anthropic-version'] = ANTHROPIC_VERSION;
-    if (apiKey) headers['x-api-key'] = apiKey;
+    if (apiKey && authMode === 'bearer') headers.Authorization = `Bearer ${apiKey}`;
+    else if (apiKey) headers['x-api-key'] = apiKey;
   } else if (apiKey) {
     headers.Authorization = `Bearer ${apiKey}`;
   }
@@ -291,7 +292,7 @@ async function callProvider({ connection, apiKey, systemPrompt, messages, tools,
   try {
     const response = await fetchImpl(endpoint, {
       method: 'POST',
-      headers: providerHeaders(protocol, apiKey),
+      headers: providerHeaders(protocol, apiKey, connection.authMode),
       body: JSON.stringify(createRequest(protocol, {
         model: cleanText(connection.model, 240),
         systemPrompt,

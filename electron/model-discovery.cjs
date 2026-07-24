@@ -77,8 +77,9 @@ async function discoverModels(settings, { fetchImpl, apiKey = '', timeoutMs = 10
   try {
     const headers = { Accept: 'application/json' };
     if (apiKey && provider === 'anthropic') {
-      headers['x-api-key'] = apiKey;
       headers['anthropic-version'] = '2023-06-01';
+      if (settings.authMode === 'bearer') headers.Authorization = `Bearer ${apiKey}`;
+      else headers['x-api-key'] = apiKey;
     } else if (apiKey) {
       headers.Authorization = `Bearer ${apiKey}`;
     }

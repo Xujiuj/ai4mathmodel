@@ -3,6 +3,7 @@ const emptyConnection = {
   baseUrl: '',
   protocol: 'openai',
   model: '',
+  authMode: 'api-key',
   allowInsecureRemote: false,
   apiKey: '',
   apiKeyConfigured: false,

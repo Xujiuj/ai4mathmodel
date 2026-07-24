@@ -39,6 +39,12 @@ test('builds direct provider endpoints and provider-specific credentials', () =>
     'anthropic-version': '2023-06-01',
     'x-api-key': 'anthropic-secret',
   });
+  assert.deepEqual(providerHeaders('anthropic', 'anthropic-auth-token', 'bearer'), {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    'anthropic-version': '2023-06-01',
+    Authorization: 'Bearer anthropic-auth-token',
+  });
 });
 
 test('runs an OpenAI-compatible tool loop through the configured endpoint', async () => {

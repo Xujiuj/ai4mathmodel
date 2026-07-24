@@ -169,14 +169,23 @@ app.whenReady().then(async () => {
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const toggle = [...document.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === '项目文件');
     if (!toggle) throw new Error('Project files action was not rendered.');
-    toggle.click();
-    await wait(120);
+    for (let attempt = 0; attempt < 4 && !document.querySelector('.outline-panel'); attempt += 1) {
+      toggle.click();
+      await wait(180);
+    }
+    if (!document.querySelector('.outline-panel')) throw new Error('Project file panel was not rendered.');
     const folderLabels = [...document.querySelectorAll('.file-tree-folder-toggle span')].map((item) => item.textContent.trim());
     const selectFile = async (relative) => {
-      const button = [...document.querySelectorAll('.file-tree-file > button')].find((item) => item.title?.startsWith(relative + '\\n'));
+      const search = document.querySelector('.outline-search input');
+      if (!search) throw new Error('Project file search was not rendered.');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(search, relative);
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(80);
+      const button = [...document.querySelectorAll('.outline-files button')].find((item) => item.title?.startsWith(relative + '\\n'));
       if (!button) throw new Error('File was not listed: ' + relative);
       button.click();
-      await wait(220);
+      await wait(500);
     };
     if (!window.__qaPaperTexRelative || !window.__qaPaperPdfRelative) throw new Error('No exact TeX/PDF pair was found for QA.');
     await selectFile(window.__qaPaperTexRelative);
@@ -186,13 +195,6 @@ app.whenReady().then(async () => {
     compareButton?.click();
     await wait(160);
     const texCompareSource = document.querySelector('.compare-source .source-toolbar span')?.textContent.trim() || '';
-    await selectFile(window.__qaPaperPdfRelative);
-    const pdfFrame = document.querySelector('iframe.native-pdf');
-    compareButton = [...document.querySelectorAll('.document-tabs button')].find((item) => item.textContent.includes('对照模式'));
-    const pdfCompareEnabled = Boolean(compareButton && !compareButton.disabled);
-    compareButton?.click();
-    await wait(160);
-    const pdfCompareSource = document.querySelector('.compare-source .source-toolbar span')?.textContent.trim() || '';
     await selectFile('work/03_paper/desktop-unpaired-qa.tex');
     compareButton = [...document.querySelectorAll('.document-tabs button')].find((item) => item.textContent.includes('对照模式'));
     const unpairedCompareDisabled = Boolean(compareButton?.disabled);
@@ -213,7 +215,13 @@ app.whenReady().then(async () => {
     const csvGridVisible = Boolean(document.querySelector('.spreadsheet-grid'));
     await selectFile('work/04_review/desktop-preview-qa.xlsx');
     const spreadsheetGrid = document.querySelector('.spreadsheet-grid');
-    const runHistory = [...document.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === '运行记录');
+    await selectFile(window.__qaPaperPdfRelative);
+    const pdfFrame = document.querySelector('iframe.native-pdf');
+    const pdfFocusWorkspace = document.querySelector('.pdf-document-workspace');
+    const pdfDocumentTabsHidden = !document.querySelector('.document-tabs');
+    const pdfFilePanelHidden = !document.querySelector('.utility-sidebar');
+    const pdfCommandBarHidden = !document.querySelector('.paper-command-bar');
+    const runHistory = [...document.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === '运行记录' || button.textContent.includes('运行记录'));
     if (!runHistory) throw new Error('Run-history action was not rendered.');
     runHistory.click();
     await wait(100);
@@ -223,10 +231,12 @@ app.whenReady().then(async () => {
       textEditorVisible,
       pdfFrameVisible: Boolean(pdfFrame),
       pdfFrameUsesProjectProtocol: Boolean(pdfFrame?.getAttribute('src')?.startsWith('modeling-file://local/')),
+      pdfFocusWorkspace: Boolean(pdfFocusWorkspace),
+      pdfDocumentTabsHidden,
+      pdfFilePanelHidden,
+      pdfCommandBarHidden,
       texCompareEnabled,
-      pdfCompareEnabled,
       texCompareUsesExactSource: texCompareSource === window.__qaPaperTexRelative,
-      pdfCompareUsesExactSource: pdfCompareSource === window.__qaPaperTexRelative,
       unpairedCompareDisabled,
       editorCanScroll,
       editorScrollMoved,
@@ -280,6 +290,7 @@ app.whenReady().then(async () => {
       switchesConnections: titles.join('|') === '推理与代码模型|文本模型|生图模型（可选）',
       connectionActionVisible,
       appearanceControls: document.querySelectorAll('.appearance-segments button').length === 3,
+      localConfigImportActions: document.querySelectorAll('.local-config-actions button').length === 2,
       fitsViewport: Boolean(rect && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight),
       canScroll,
       scrollMoved,
@@ -334,7 +345,7 @@ app.whenReady().then(async () => {
     assert.equal(value, true, `File interaction failed: ${key}`);
   }
   assert.deepEqual(output.responsive.viewport, output.responsive.document);
-  assert.equal(output.responsive.utilityOverlay, true);
+  assert.equal(output.responsive.utilityOverlay, false);
   for (const [key, value] of Object.entries(output.settingsModal)) {
     assert.equal(value, true, `Settings modal interaction failed: ${key}`);
   }

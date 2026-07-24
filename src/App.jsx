@@ -9,8 +9,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { desktopApi, isDesktopRuntime } from './api.js';
-import { Inspector } from './components/Inspector.jsx';
-import { ConfirmModal, ConnectionSettingsModal, CreateProjectModal, FigureReviewModal } from './components/Modals.jsx';
+import { ConfirmModal, ConnectionSettingsModal, CreateProjectModal } from './components/Modals.jsx';
 import { PaperCommandBar, PaperWorkspace } from './components/PaperWorkspace.jsx';
 import { RunDrawer } from './components/RunDrawer.jsx';
 import { AppSidebar, EmptyProject, OutlinePanel, ProjectSummary, UtilitySidebar } from './components/Shell.jsx';
@@ -93,20 +92,15 @@ export function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [compareSourceFile, setCompareSourceFile] = useState(null);
   const [documentView, setDocumentView] = useState('preview');
-  const [inspectorTab, setInspectorTab] = useState('provenance');
-  const [selectedEvidence, setSelectedEvidence] = useState('');
   const [latex, setLatex] = useState('');
-  const [auditText, setAuditText] = useState('');
   const [figureUrl, setFigureUrl] = useState('');
   const [spreadsheet, setSpreadsheet] = useState(null);
   const [pdfUrl, setPdfUrl] = useState('');
-  const [figureRecords, setFigureRecords] = useState([]);
   const [logs, setLogs] = useState([]);
   // Keep activity available without letting it compete with the paper canvas.
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState('logs');
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
-  const [sidePanelMode, setSidePanelMode] = useState('quality');
   const [running, setRunning] = useState(false);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [resolvedTheme, setResolvedTheme] = useState('light');
@@ -190,15 +184,11 @@ export function App() {
     setSelectedFile(null);
     setCompareSourceFile(null);
     setLatex('');
-    setAuditText('');
     setFigureUrl('');
     setSpreadsheet(null);
     setPdfUrl('');
-    setFigureRecords([]);
     setCheckpoints([]);
     setDocumentView('preview');
-    setInspectorTab('provenance');
-    setSelectedEvidence('');
   }, []);
 
   const loadProject = useCallback(async (project) => {
@@ -228,10 +218,6 @@ export function App() {
       const urlOptional = (file) => file
         ? desktopApi.fileUrl(file.path).catch(() => '')
         : Promise.resolve('');
-      const figures = await Promise.all((next.paper?.figures || []).slice(0, 12).map(async (figure) => ({
-        ...figure,
-        url: await urlOptional(figure),
-      })));
       const initialFile = next.paper?.pdf || next.paper?.tex || next.files?.[0] || null;
       const initialSource = initialFile?.ext === '.pdf'
         ? matchingFile(next.files || [], initialFile, '.tex')
@@ -239,9 +225,8 @@ export function App() {
       const initialPdf = initialFile?.ext === '.tex'
         ? matchingFile(next.files || [], initialFile, '.pdf')
         : initialFile?.ext === '.pdf' ? initialFile : null;
-      const [nextLatex, nextAudit, nextPdfUrl] = await Promise.all([
+      const [nextLatex, nextPdfUrl] = await Promise.all([
         readOptional(initialSource),
-        readOptional(next.paper?.audit),
         urlOptional(initialPdf),
       ]);
       if (requestId !== loadRequestRef.current) return null;
@@ -251,10 +236,7 @@ export function App() {
       setSelectedFile(initialFile);
       setCompareSourceFile(initialSource);
       setLatex(nextLatex);
-      setAuditText(nextAudit);
       setPdfUrl(nextPdfUrl);
-      setFigureRecords(figures);
-      setFigureUrl(figures[0]?.url || '');
       if (projectChanged) {
         const detectedStage = next.stages?.find((stage) => stage.uiStatus === 'active')?.key
           || (next.paper?.tex || next.paper?.pdf ? 'paper' : next.stages?.[0]?.key || 'analysis');
@@ -412,7 +394,6 @@ export function App() {
         const url = await desktopApi.fileUrl(file.path);
         if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setFigureUrl(url || '');
       } catch { if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setFigureUrl(''); }
-      setInspectorTab('figures');
       setDocumentView('preview');
     } else if (file.ext === '.pdf') {
       const pairedTex = matchingFile(snapshot?.files || [], file, '.tex');
@@ -586,17 +567,6 @@ export function App() {
     await runPaperAction('compile');
   };
 
-  const selectFigure = (figure) => {
-    if (!figure) return;
-    if (figure.url) setFigureUrl(figure.url);
-    setSelectedFile(figure);
-    setDocumentView('preview');
-    setInspectorTab('figures');
-    setSidePanelMode('quality');
-    setSidePanelOpen(true);
-    setModal(null);
-  };
-
   const saveSettings = async (next) => {
     try {
       const saved = await desktopApi.saveSettings(next);
@@ -621,19 +591,26 @@ export function App() {
     }
   };
 
-  const toggleSidePanel = (mode) => {
-    if (sidePanelOpen && sidePanelMode === mode) {
-      setSidePanelOpen(false);
+  const importLocalModelConfig = (source) => desktopApi.importLocalModelConfig(source);
+
+  const toggleSidePanel = () => {
+    if (activeStage === 'paper' && documentView === 'preview' && selectedFile?.ext === '.pdf' && pdfUrl) {
+      setDocumentView('source');
+      setSidePanelOpen(true);
       return;
     }
-    setSidePanelMode(mode);
-    setSidePanelOpen(true);
+    setSidePanelOpen((open) => !open);
   };
 
   const openRunHistory = () => {
     setDrawerTab('logs');
     setDrawerOpen(true);
   };
+
+  const pdfFocus = activeStage === 'paper'
+    && documentView === 'preview'
+    && selectedFile?.ext === '.pdf'
+    && Boolean(pdfUrl);
 
   return (
     <div className={`app-shell ${settings.compactMode ? 'compact' : ''}`}>
@@ -661,10 +638,8 @@ export function App() {
             stats={snapshot?.stats}
             modelLabel={modelSummary(settings, activeStage)}
             onModels={() => setModal('settings')}
-            onFiles={() => toggleSidePanel('files')}
-            onQuality={() => toggleSidePanel('quality')}
+            onFiles={toggleSidePanel}
             sidePanelOpen={sidePanelOpen}
-            sidePanelMode={sidePanelMode}
             running={running}
             onPrimary={() => runFullPipeline()}
           />
@@ -672,7 +647,7 @@ export function App() {
         <div className="workspace-body">
           <div className="workspace-main">
             {!activeProject ? <EmptyProject desktopAvailable={isDesktopRuntime} onNew={() => setModal('create')} onImport={addProject} /> : projectLoading || projectLoadError || !snapshot ? <WorkspaceState project={activeProject} loading={projectLoading} error={projectLoadError || '项目数据尚未就绪。'} onRetry={() => loadProject(activeProject).catch((error) => notify(error.message, 'error'))} /> : activeStage === 'paper' ? (
-              <div className="paper-layout">
+              <div className={`paper-layout ${pdfFocus ? 'pdf-focus' : ''}`}>
                 <PaperWorkspace
                   view={documentView}
                   setView={setDocumentView}
@@ -693,12 +668,13 @@ export function App() {
                   autoSave={settings.autoSave}
                   project={activeProject}
                   theme={resolvedTheme}
+                  pdfFocus={pdfFocus}
                 />
               </div>
             ) : (
               <div className="pipeline-layout"><StageWorkspace project={activeProject} stage={activeStage} snapshot={snapshot} onOpenFile={openWorkspaceFile} onPickFiles={handleStageFile} onDropFiles={importDroppedFiles} /></div>
             )}
-            {activeStage === 'paper' && snapshot && !projectLoading ? (
+            {activeStage === 'paper' && snapshot && !projectLoading && !pdfFocus ? (
               <PaperCommandBar
                 running={running}
                 hasPdf={Boolean(snapshot?.paper?.pdf)}
@@ -713,12 +689,10 @@ export function App() {
             ) : null}
             <RunDrawer open={drawerOpen} setOpen={setDrawerOpen} tab={drawerTab} setTab={setDrawerTab} logs={logs} running={running} onStop={stopStage} onRestart={() => runFullPipeline()} onClear={() => setLogs([])} checkpoints={checkpoints} onCreateCheckpoint={() => createCheckpoint()} onRestoreCheckpoint={requestRestoreCheckpoint} />
           </div>
-          {activeProject ? (
-            <UtilitySidebar open={sidePanelOpen} mode={sidePanelMode} onSelect={toggleSidePanel} onClose={() => setSidePanelOpen(false)} onOpenRuns={openRunHistory} running={running}>
-              {projectLoading || !snapshot ? <div className="utility-state"><LoaderCircle className="spinning" size={20} /><span>正在读取项目资料</span></div> : sidePanelMode === 'files' ? (
+          {activeProject && !pdfFocus ? (
+            <UtilitySidebar open={sidePanelOpen} onClose={() => setSidePanelOpen(false)} onOpenRuns={openRunHistory} running={running}>
+              {projectLoading || !snapshot ? <div className="utility-state"><LoaderCircle className="spinning" size={20} /><span>正在读取项目资料</span></div> : (
                 <OutlinePanel files={snapshot.files} selectedFile={selectedFile} onSelect={selectFile} onOpenExternal={openExternal} onAddProblem={() => addInputs('problem')} onAddTemplate={() => addInputs('template')} stats={snapshot.stats} />
-              ) : (
-                <Inspector activeTab={inspectorTab} setActiveTab={setInspectorTab} selectedEvidence={selectedEvidence} onEvidenceSelect={setSelectedEvidence} figures={figureRecords} auditText={auditText} files={snapshot.files || []} onOpenFile={openWorkspaceFile} onSelectFigure={selectFigure} onOpenFigureReview={() => setModal('figures')} onRunAudit={() => runPaperAction('audit')} />
               )}
             </UtilitySidebar>
           ) : null}
@@ -727,8 +701,7 @@ export function App() {
       </div>
 
       {modal === 'create' ? <CreateProjectModal onClose={() => setModal(null)} onCreate={createProject} /> : null}
-      {modal === 'settings' ? <ConnectionSettingsModal onClose={() => setModal(null)} settings={settings} onSave={saveSettings} onDiscoverModels={discoverModels} /> : null}
-      {modal === 'figures' ? <FigureReviewModal figures={figureRecords} onClose={() => setModal(null)} onSelect={selectFigure} onOpen={openExternal} /> : null}
+      {modal === 'settings' ? <ConnectionSettingsModal onClose={() => setModal(null)} settings={settings} onSave={saveSettings} onDiscoverModels={discoverModels} onImportLocalConfig={importLocalModelConfig} /> : null}
       {confirm ? <ConfirmModal title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} tone={confirm.tone} onClose={() => setConfirm(null)} onConfirm={confirm.action} /> : null}
       {toast ? <div className={`toast toast-${toast.tone}`}>{toast.tone === 'success' ? <CheckCircle2 size={15} /> : null}{toast.message}</div> : null}
     </div>

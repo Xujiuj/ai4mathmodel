@@ -91,6 +91,7 @@ export function PaperWorkspace({
   onOpenSelectedFile,
   autoSave,
   theme,
+  pdfFocus = false,
 }) {
   const [dirty, setDirty] = useState(false);
   const [zoom, setZoom] = useState(100);
@@ -118,6 +119,14 @@ export function PaperWorkspace({
     const timer = window.setTimeout(() => save(), 1200);
     return () => window.clearTimeout(timer);
   }, [autoSave, dirty, latex, save]);
+
+  if (pdfFocus && pdfUrl) {
+    return (
+      <section className="document-workspace pdf-document-workspace" aria-label="PDF 预览">
+        <iframe className="native-pdf" src={pdfUrl} title={selectedFile?.name || 'PDF 预览'} />
+      </section>
+    );
+  }
 
   return (
     <section className="document-workspace" aria-label="论文工作区">

@@ -2,6 +2,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Download,
   FolderOpen,
   KeyRound,
   Monitor,
@@ -52,7 +53,7 @@ function StatusLine({ value }) {
   return <span className="settings-status-line">{value}</span>;
 }
 
-export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverModels }) {
+export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverModels, onImportLocalConfig }) {
   const [form, setForm] = useState({
     ...DEFAULT_SETTINGS,
     ...settings,
@@ -67,6 +68,7 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
   const [discovery, setDiscovery] = useState({});
   const [showKeys, setShowKeys] = useState({});
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState('');
   const [formMessage, setFormMessage] = useState('');
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
@@ -127,6 +129,36 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
     }
   };
 
+  const importLocalConfig = async (source) => {
+    setImporting(source);
+    setFormMessage('');
+    try {
+      const result = await onImportLocalConfig(source);
+      const key = result?.connectionKey;
+      if (!MODEL_CONNECTIONS.some(([item]) => item === key) || !result?.connection) throw new Error('本地配置格式无效。');
+      setForm((current) => ({
+        ...current,
+        connections: {
+          ...current.connections,
+          [key]: {
+            ...current.connections[key],
+            ...result.connection,
+            apiKey: result.apiKey || current.connections[key].apiKey,
+            apiKeyConfigured: Boolean(result.apiKey || current.connections[key].apiKeyConfigured),
+            clearApiKey: false,
+          },
+        },
+      }));
+      setDiscovery((current) => ({ ...current, [key]: { status: 'idle', message: '', models: [] } }));
+      setActiveConnection(key);
+      setFormMessage(result.message || '本地配置已导入，保存后生效。');
+    } catch (error) {
+      setFormMessage(error.message || '本地配置导入失败。');
+    } finally {
+      setImporting('');
+    }
+  };
+
   const activeMeta = MODEL_CONNECTIONS.find(([key]) => key === activeConnection) || MODEL_CONNECTIONS[0];
   const connection = form.connections[activeConnection];
   const result = discovery[activeConnection] || { status: 'idle', models: [] };
@@ -139,6 +171,14 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
             <button type="button" role="tab" aria-selected={activeConnection === key} className={activeConnection === key ? 'active' : ''} key={key} onClick={() => setActiveConnection(key)}>{title}</button>
           ))}
         </nav>
+
+        <section className="local-config-import" aria-label="本地配置导入">
+          <div><h3>导入本地配置</h3><p>仅读取可直连的地址、模型与凭据；保存设置后才会写入本机安全存储。</p></div>
+          <div className="local-config-actions">
+            <CommandButton icon={Download} onClick={() => importLocalConfig('codex')} disabled={Boolean(importing)}>{importing === 'codex' ? '正在导入' : '导入 Codex 配置'}</CommandButton>
+            <CommandButton icon={Download} onClick={() => importLocalConfig('anthropic')} disabled={Boolean(importing)}>{importing === 'anthropic' ? '正在导入' : '导入 Anthropic 配置'}</CommandButton>
+          </div>
+        </section>
 
         <section className="model-settings-section connection-block">
           <div className="settings-section-title"><div><h3>{activeMeta[1]}</h3></div><StatusLine value={connection.model || '未选择模型'} /></div>

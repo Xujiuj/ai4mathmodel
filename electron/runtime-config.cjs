@@ -1,6 +1,7 @@
 const APPEARANCES = new Set(['light', 'dark', 'system']);
 const CONNECTION_KEYS = Object.freeze(['reasoning', 'writing', 'image']);
 const PROTOCOLS = new Set(['openai', 'ollama', 'anthropic']);
+const AUTH_MODES = new Set(['api-key', 'bearer']);
 
 const EMPTY_CONNECTION = Object.freeze({
   provider: '',
@@ -31,6 +32,10 @@ function normalizeProtocol(value) {
   return 'openai';
 }
 
+function normalizeAuthMode(value) {
+  return AUTH_MODES.has(value) ? value : 'api-key';
+}
+
 function normalizeConnection(source = {}) {
   const protocol = normalizeProtocol(source.protocol);
   return {
@@ -38,6 +43,7 @@ function normalizeConnection(source = {}) {
     baseUrl: cleanText(source.baseUrl, '', 2048),
     protocol,
     model: cleanText(source.model, '', 160),
+    authMode: normalizeAuthMode(source.authMode),
     allowInsecureRemote: Boolean(source.allowInsecureRemote),
   };
 }

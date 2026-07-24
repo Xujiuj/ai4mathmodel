@@ -28,6 +28,7 @@ function browserPreviewApi() {
     checkPaper: desktopUnavailable,
     stopStage: desktopUnavailable,
     listModels: desktopUnavailable,
+    importLocalModelConfig: desktopUnavailable,
     saveSettings: desktopUnavailable,
   };
 }

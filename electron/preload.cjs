@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('modelingDesktop', {
   stopStage: () => invoke('pipeline:stop'),
   activeRun: () => invoke('pipeline:active'),
   listModels: (settings, connection) => invoke('models:list', { settings, connection }),
+  importLocalModelConfig: (source) => invoke('settings:import-local', { source }),
   getSettings: () => invoke('settings:get'),
   saveSettings: (settings) => invoke('settings:save', settings),
   onRunEvent: (callback) => {
