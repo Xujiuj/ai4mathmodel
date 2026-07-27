@@ -182,7 +182,12 @@ function openAiAnswer(payload) {
       input: parseArguments(call.function.arguments),
       raw: call,
     })) : [];
-  return { text: cleanText(textFromContent(message.content)), toolCalls, assistant: message };
+  const usage = {
+    inputTokens: Number(payload?.usage?.prompt_tokens || 0),
+    outputTokens: Number(payload?.usage?.completion_tokens || 0),
+    cacheReadTokens: 0,
+  };
+  return { text: cleanText(textFromContent(message.content)), toolCalls, assistant: message, usage };
 }
 
 function ollamaAnswer(payload) {
@@ -196,7 +201,12 @@ function ollamaAnswer(payload) {
       input: parseArguments(call.function?.arguments || call.arguments),
       raw: call,
     })) : [];
-  return { text: cleanText(textFromContent(message.content)), toolCalls, assistant: message };
+  const usage = {
+    inputTokens: Number(payload?.prompt_eval_count || 0),
+    outputTokens: Number(payload?.eval_count || 0),
+    cacheReadTokens: 0,
+  };
+  return { text: cleanText(textFromContent(message.content)), toolCalls, assistant: message, usage };
 }
 
 function anthropicAnswer(payload) {
@@ -210,10 +220,16 @@ function anthropicAnswer(payload) {
       input: item.input && typeof item.input === 'object' ? item.input : {},
       raw: item,
     }));
+  const usage = {
+    inputTokens: Number(payload?.usage?.input_tokens || 0),
+    outputTokens: Number(payload?.usage?.output_tokens || 0),
+    cacheReadTokens: Number(payload?.usage?.cache_read_input_tokens || 0),
+  };
   return {
     text: cleanText(content.filter((item) => item?.type === 'text').map((item) => item.text || '').join('\n')),
     toolCalls,
     assistant: { role: 'assistant', content },
+    usage,
   };
 }
 
@@ -351,6 +367,7 @@ async function runDirectAgent({
   const allowedTools = new Set(tools.map((tool) => tool.name));
   const messages = [{ role: 'user', content: cleanText(prompt, 80_000) }];
   let toolCallCount = 0;
+  const totalUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
 
   for (let turn = 0; turn < Math.max(1, Math.min(Number(maxTurns) || MAX_TURNS, MAX_TURNS)); turn += 1) {
     if (signal?.aborted) throw providerError('MODEL_REQUEST_TIMEOUT');
@@ -364,8 +381,23 @@ async function runDirectAgent({
       timeoutMs,
       signal,
     });
+
+    if (answer.usage) {
+      totalUsage.inputTokens += answer.usage.inputTokens || 0;
+      totalUsage.outputTokens += answer.usage.outputTokens || 0;
+      totalUsage.cacheReadTokens += answer.usage.cacheReadTokens || 0;
+    }
+
     if (!answer.toolCalls.length) {
-      return { code: 0, stdout: answer.text, stderr: '', toolCallCount, turns: turn + 1, provider: protocol };
+      return {
+        code: 0,
+        stdout: answer.text,
+        stderr: '',
+        toolCallCount,
+        turns: turn + 1,
+        provider: protocol,
+        usage: totalUsage,
+      };
     }
 
     const results = [];
@@ -387,7 +419,9 @@ async function runDirectAgent({
     }
     appendToolResults(protocol, messages, answer, results);
   }
-  throw providerError('MODEL_TOOL_LIMIT');
+  const error = providerError('MODEL_TOOL_LIMIT');
+  error.usage = totalUsage;
+  throw error;
 }
 
 module.exports = {

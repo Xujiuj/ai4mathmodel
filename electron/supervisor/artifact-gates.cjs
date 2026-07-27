@@ -80,23 +80,43 @@ async function validateReferencedFigures(root, entryDirectory, texSource, pdf) {
   return { ok: true, files };
 }
 
+function asProjectView(rootOrView) {
+  if (rootOrView && typeof rootOrView === 'object' && typeof rootOrView.root === 'string') {
+    return {
+      root: rootOrView.root,
+      resolvePath: typeof rootOrView.resolvePath === 'function'
+        ? rootOrView.resolvePath
+        : (relative) => path.join(rootOrView.root, relative),
+    };
+  }
+  return {
+    root: rootOrView,
+    resolvePath: (relative) => path.join(rootOrView, relative),
+  };
+}
+
 function toRelative(root, target) {
   return path.relative(root, target).replaceAll('\\', '/');
 }
 
-async function listFiles(root, relative, result = []) {
-  const directory = path.resolve(root, relative);
+function toPublicRelative(root, target) {
+  return toRelative(root, target).replace(/^work\/\.staging\/[^/]+\//, 'work/');
+}
+
+async function listFiles(rootOrView, relative, result = []) {
+  const view = asProjectView(rootOrView);
+  const directory = view.resolvePath(relative);
   if (!fs.existsSync(directory)) return result;
   for (const entry of await fsp.readdir(directory, { withFileTypes: true })) {
     if (entry.name.startsWith('.') || ['node_modules', '__pycache__'].includes(entry.name)) continue;
     const target = path.join(directory, entry.name);
     if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory()) await listFiles(root, toRelative(root, target), result);
+    if (entry.isDirectory()) await listFiles(view, toPublicRelative(view.root, target), result);
     if (entry.isFile()) {
       const stat = await fsp.stat(target);
       result.push({
         path: target,
-        relative: toRelative(root, target),
+        relative: toPublicRelative(view.root, target),
         name: entry.name,
         ext: path.extname(entry.name).toLowerCase(),
         size: stat.size,

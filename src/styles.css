@@ -403,6 +403,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .reveal-cluster { border-right: 0; }
 .status-bar { flex: 0 0 24px; min-width: 0; padding: 0 11px; border-top: 1px solid var(--line); background: var(--surface-subtle); color: var(--muted); display: flex; align-items: center; gap: 14px; font-size: 8.8px; }
 .status-bar span { min-width: 0; max-width: 330px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.project-select small.project-running { margin-left: 6px; color: var(--accent, #2f6f4e); font-size: 10px; }
 .status-spacer { flex: 1; }
 .status-ready { color: var(--accent); }
 .status-running { color: var(--blue); }

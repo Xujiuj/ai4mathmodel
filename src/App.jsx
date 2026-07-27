@@ -59,13 +59,19 @@ function mergeSettings(stored = {}) {
   };
 }
 
-function StatusBar({ project, running, appInfo, settings, activeStage }) {
+function StatusBar({ project, running, appInfo, settings, activeStage, spend }) {
   return (
     <footer className="status-bar">
       <span><Cpu size={12} />运行环境：{appInfo?.platform === 'browser-preview' ? '浏览器预览' : '桌面端'}</span>
       <span><Database size={12} />自动保存：{settings.autoSave ? '已开启' : '已关闭'}</span>
       <span><HardDrive size={12} />工作区：{project?.root || '未打开'}</span>
       <span className="status-spacer" />
+      {spend?.tokens > 0 ? (
+        <span className={spend.pricingUnknown ? 'pricing-unknown' : 'spend-indicator'}>
+          {spend.tokens.toLocaleString()} tokens
+          {!spend.pricingUnknown ? ` · ¥${Number(spend.cost || 0).toFixed(2)}` : ''}
+        </span>
+      ) : null}
       <span className="status-model"><Cpu size={12} />{modelSummary(settings, activeStage)}</span>
       <span className={running ? 'status-running' : 'status-ready'}>{running ? <CircleAlert size={12} /> : <CheckCircle2 size={12} />}{running ? '任务运行中' : '项目就绪'}</span>
       <span>v{appInfo?.version || '0.1.0'}</span>
@@ -102,6 +108,8 @@ export function App() {
   const [drawerTab, setDrawerTab] = useState('logs');
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
   const [running, setRunning] = useState(false);
+  const [activeRuns, setActiveRuns] = useState([]);
+  const [spend, setSpend] = useState({ cost: 0, tokens: 0, pricingUnknown: false });
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [resolvedTheme, setResolvedTheme] = useState('light');
   const [appInfo, setAppInfo] = useState(null);
@@ -168,7 +176,7 @@ export function App() {
     }).catch((error) => {
       if (!cancelled) notify(error.message || '初始化工作区失败。', 'error');
     });
-    desktopApi.activeRun().then((active) => {
+    desktopApi.activeRun(activeProjectRef.current?.root).then((active) => {
       if (cancelled) return;
       if (active) {
         setRunning(true);
@@ -259,7 +267,25 @@ export function App() {
   }, [activeProject, loadProject, notify]);
 
   useEffect(() => {
+    if (!isDesktopRuntime) return undefined;
+    let cancelled = false;
+    const refreshRuns = () => {
+      desktopApi.activeRuns?.().then((items) => {
+        if (!cancelled) setActiveRuns(Array.isArray(items) ? items : []);
+      }).catch(() => {});
+    };
+    refreshRuns();
+    const timer = window.setInterval(refreshRuns, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [running]);
+
+  useEffect(() => {
     return desktopApi.onRunEvent((event) => {
+      const currentRoot = activeProjectRef.current?.root;
+      if (event.root && currentRoot && event.root !== currentRoot) return;
       if (event.type === 'pipeline-progress') {
         setRunning(true);
         setActiveStage(event.stage || 'analysis');
@@ -274,6 +300,13 @@ export function App() {
         setDrawerTab('logs');
         const level = event.status === 'completed' ? 'success' : event.status === 'recovering' ? 'warning' : 'info';
         setLogs((items) => [...items, { at: nowLabel(event.at), level, text: event.message }]);
+      }
+      if (event.type === 'usage-progress') {
+        setSpend({
+          cost: Number(event.cost) || 0,
+          tokens: Number(event.tokens) || 0,
+          pricingUnknown: Boolean(event.pricingUnknown),
+        });
       }
       if (event.type === 'pipeline-complete') {
         setRunning(false);
@@ -328,7 +361,8 @@ export function App() {
   }, [activeProject, notify, running, settings, snapshot]);
 
   const stopStage = async () => {
-    await desktopApi.stopStage();
+    if (!activeProject?.root) return;
+    await desktopApi.stopStage(activeProject.root);
     notify('已请求停止，当前进度将安全保存。');
   };
 
@@ -627,6 +661,7 @@ export function App() {
         onRemove={requestRemoveProject}
         onOpenRuns={openRunHistory}
         running={running}
+        activeRuns={activeRuns}
         desktopAvailable={isDesktopRuntime}
       />
       <div className="app-workspace">
@@ -697,11 +732,22 @@ export function App() {
             </UtilitySidebar>
           ) : null}
         </div>
-        <StatusBar project={activeProject} running={running} appInfo={appInfo} settings={settings} activeStage={activeStage} />
+        <StatusBar project={activeProject} running={running} appInfo={appInfo} settings={settings} activeStage={activeStage} spend={spend} />
       </div>
 
       {modal === 'create' ? <CreateProjectModal onClose={() => setModal(null)} onCreate={createProject} /> : null}
-      {modal === 'settings' ? <ConnectionSettingsModal onClose={() => setModal(null)} settings={settings} onSave={saveSettings} onDiscoverModels={discoverModels} onImportLocalConfig={importLocalModelConfig} /> : null}
+      {modal === 'settings' ? (
+        <ConnectionSettingsModal
+          onClose={() => setModal(null)}
+          settings={settings}
+          onSave={saveSettings}
+          onDiscoverModels={discoverModels}
+          onImportLocalConfig={importLocalModelConfig}
+          onExportDiagnostics={activeProject?.root
+            ? () => desktopApi.exportDiagnostics(activeProject.root, false)
+            : undefined}
+        />
+      ) : null}
       {confirm ? <ConfirmModal title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} tone={confirm.tone} onClose={() => setConfirm(null)} onConfirm={confirm.action} /> : null}
       {toast ? <div className={`toast toast-${toast.tone}`}>{toast.tone === 'success' ? <CheckCircle2 size={15} /> : null}{toast.message}</div> : null}
     </div>

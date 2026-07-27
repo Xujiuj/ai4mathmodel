@@ -1,0 +1,17 @@
+{
+  "version": "2026.07.27",
+  "channel": "stable",
+  "publishedAt": "2026-07-27T00:00:00.000Z",
+  "components": {
+    "python": {
+      "version": "3.12.1",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "url": "https://dl.example.com/mmw/runtime/python-3.12.1.7z"
+    },
+    "tectonic": {
+      "version": "0.15.0",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "url": "https://dl.example.com/mmw/runtime/tectonic-0.15.0.7z"
+    }
+  }
+}

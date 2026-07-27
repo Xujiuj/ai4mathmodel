@@ -42,6 +42,20 @@ function toPublicPipelineEvent(event) {
       return publicEvent('pipeline-complete', 'cancelled', stage, '完整流程已停止', event.createdAt);
     case 'run.paused':
       return publicEvent('pipeline-complete', 'paused', stage, '流程暂时无法继续，请检查模型连接后重试', event.createdAt);
+    case 'usage.updated': {
+      const tokens = Number(event?.payload?.tokens) || 0;
+      const cost = Number(event?.payload?.cost) || 0;
+      const pricingUnknown = Boolean(event?.payload?.pricingUnknown);
+      const message = pricingUnknown
+        ? `已消耗 ${tokens.toLocaleString()} tokens`
+        : `已消耗 ${tokens.toLocaleString()} tokens · 约 ¥${cost.toFixed(2)}`;
+      return {
+        ...publicEvent('usage-progress', 'running', stage, message, event.createdAt),
+        tokens,
+        cost,
+        pricingUnknown,
+      };
+    }
     default:
       return null;
   }

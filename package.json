@@ -16,6 +16,7 @@
     "capture": "npm run build && electron electron/capture.cjs",
     "qa:electron": "npm run build && electron electron/qa.cjs",
     "test": "node --test tests/*.test.cjs",
+    "sign:manifest": "node scripts/sign-runtime-manifest.cjs",
     "verify:runtime": "node scripts/verify-runtime.cjs",
     "verify:package": "node scripts/verify-package.cjs",
     "verify:installer": "node scripts/verify-installer.cjs",
@@ -27,7 +28,8 @@
     "dist:win": "npm run dist:dir && npm run build:installer && npm run verify:installer"
   },
   "dependencies": {
-    "bytenode": "^1.6.0"
+    "bytenode": "^1.6.0",
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "@uiw/react-codemirror": "^4.25.2",
@@ -71,6 +73,16 @@
       {
         "from": "runtime/THIRD_PARTY_NOTICES.txt",
         "to": "runtime/THIRD_PARTY_NOTICES.txt"
+      },
+      {
+        "from": "runtime/guard",
+        "to": "runtime/guard"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://dl.example.com/mmw/${channel}/"
       }
     ],
     "electronFuses": {
@@ -82,7 +94,8 @@
       "onlyLoadAppFromAsar": true
     },
     "win": {
-      "icon": "build/app-icon.ico"
+      "icon": "build/app-icon.ico",
+      "signingHashAlgorithms": ["sha256"]
     }
   }
 }

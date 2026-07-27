@@ -14,6 +14,11 @@ export const DEFAULT_SETTINGS = {
   appearance: 'light',
   autoSave: true,
   compactMode: false,
+  skipBudgetPrompt: false,
+  pythonSandbox: {
+    memoryLimitMB: 4096,
+    allowNetwork: false,
+  },
   connections: {
     reasoning: { ...emptyConnection },
     writing: { ...emptyConnection },

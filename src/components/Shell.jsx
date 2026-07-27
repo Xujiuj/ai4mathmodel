@@ -50,12 +50,13 @@ export function StatusPill({ status, children }) {
   return <span className={`status-pill status-${status}`}>{children}</span>;
 }
 
-export function AppSidebar({ projects, activeProject, stages, activeStage, onSelectProject, onSelectStage, onNew, onImport, onSettings, onRemove, onOpenRuns, running, desktopAvailable = true }) {
+export function AppSidebar({ projects, activeProject, stages, activeStage, onSelectProject, onSelectStage, onNew, onImport, onSettings, onRemove, onOpenRuns, running, activeRuns = [], desktopAvailable = true }) {
   const [query, setQuery] = useState('');
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const visible = projects.filter((project) => project.name.toLowerCase().includes(query.toLowerCase()));
   const stageItems = stages || [];
+  const runByRoot = new Map(activeRuns.map((item) => [String(item.root || '').toLowerCase(), item]));
   return (
     <aside className="app-sidebar" aria-label="应用导航">
       <div className="brand-row">
@@ -88,6 +89,7 @@ export function AppSidebar({ projects, activeProject, stages, activeStage, onSel
               {visible.map((project) => {
                 const active = project.id === activeProject?.id;
                 const expanded = active && !collapsedProjects[project.id];
+                const projectRun = runByRoot.get(String(project.root || '').toLowerCase());
                 return (
                   <div className={`project-node ${active ? 'active' : ''}`} key={project.id}>
                     <div className="project-node-line">
@@ -101,6 +103,7 @@ export function AppSidebar({ projects, activeProject, stages, activeStage, onSel
                         {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                         {active ? <FolderOpen size={15} /> : <Folder size={15} />}
                         <span>{project.name}</span>
+                        {projectRun ? <small className="project-running">{projectRun.stage || '运行中'}</small> : null}
                       </button>
                       {active ? <IconButton className="project-remove" label="从列表移除项目" onClick={() => onRemove(project)}><Trash2 size={13} /></IconButton> : null}
                     </div>

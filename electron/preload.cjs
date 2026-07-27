@@ -28,8 +28,14 @@ contextBridge.exposeInMainWorld('modelingDesktop', {
   runFullPipeline: (root) => invoke('pipeline:run-all', { root }),
   compilePaper: (root) => invoke('paper:compile', { root }),
   checkPaper: (root) => invoke('paper:check', { root }),
-  stopStage: () => invoke('pipeline:stop'),
-  activeRun: () => invoke('pipeline:active'),
+  stopStage: (root) => invoke('pipeline:stop', { root }),
+  activeRun: (root) => invoke('pipeline:active', { root }),
+  activeRuns: () => invoke('pipeline:active-all'),
+  exportDiagnostics: (root, includeSourceFiles = false) => invoke('diagnostics:export', { root, includeSourceFiles }),
+  checkForUpdates: () => invoke('updater:check'),
+  downloadUpdate: () => invoke('updater:download'),
+  installUpdate: () => invoke('updater:install'),
+  listComponentUpdates: () => invoke('components:list-updates'),
   listModels: (settings, connection) => invoke('models:list', { settings, connection }),
   importLocalModelConfig: (source) => invoke('settings:import-local', { source }),
   getSettings: () => invoke('settings:get'),
@@ -38,5 +44,10 @@ contextBridge.exposeInMainWorld('modelingDesktop', {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('pipeline:event', handler);
     return () => ipcRenderer.removeListener('pipeline:event', handler);
+  },
+  onUpdaterEvent: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('updater:event', handler);
+    return () => ipcRenderer.removeListener('updater:event', handler);
   },
 });

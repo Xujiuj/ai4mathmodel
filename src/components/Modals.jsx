@@ -53,7 +53,7 @@ function StatusLine({ value }) {
   return <span className="settings-status-line">{value}</span>;
 }
 
-export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverModels, onImportLocalConfig }) {
+export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverModels, onImportLocalConfig, onExportDiagnostics }) {
   const [form, setForm] = useState({
     ...DEFAULT_SETTINGS,
     ...settings,
@@ -63,6 +63,11 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
       apiKey: '',
       clearApiKey: false,
     }])),
+    pythonSandbox: {
+      memoryLimitMB: 4096,
+      allowNetwork: false,
+      ...(settings?.pythonSandbox || {}),
+    },
   });
   const [activeConnection, setActiveConnection] = useState('reasoning');
   const [discovery, setDiscovery] = useState({});
@@ -70,6 +75,7 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState('');
   const [formMessage, setFormMessage] = useState('');
+  const [exportingDiag, setExportingDiag] = useState(false);
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const updateConnection = (key, field, value) => {
@@ -210,7 +216,29 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
           <div className="preference-grid">
             <label className="toggle-row"><span><strong>自动保存</strong></span><input type="checkbox" checked={Boolean(form.autoSave)} onChange={(event) => update('autoSave', event.target.checked)} /></label>
             <label className="toggle-row"><span><strong>紧凑布局</strong></span><input type="checkbox" checked={Boolean(form.compactMode)} onChange={(event) => update('compactMode', event.target.checked)} /></label>
+            <label className="toggle-row"><span><strong>求解允许联网</strong></span><input type="checkbox" checked={Boolean(form.pythonSandbox?.allowNetwork)} onChange={(event) => setForm((current) => ({ ...current, pythonSandbox: { ...current.pythonSandbox, allowNetwork: event.target.checked } }))} /></label>
+            <label className="toggle-row"><span><strong>费用预估提示</strong></span><input type="checkbox" checked={!form.skipBudgetPrompt} onChange={(event) => update('skipBudgetPrompt', !event.target.checked)} /></label>
           </div>
+          {onExportDiagnostics ? (
+            <div className="preference-grid">
+              <CommandButton
+                disabled={exportingDiag}
+                onClick={async () => {
+                  setExportingDiag(true);
+                  setFormMessage('');
+                  try {
+                    const result = await onExportDiagnostics();
+                    if (result?.cancelled) setFormMessage('已取消导出');
+                    else if (result?.ok) setFormMessage(`诊断包已导出${result.supportCode ? ` · ${result.supportCode}` : ''}`);
+                  } catch (error) {
+                    setFormMessage(error.message || '诊断包导出失败');
+                  } finally {
+                    setExportingDiag(false);
+                  }
+                }}
+              >{exportingDiag ? '正在导出' : '导出诊断包'}</CommandButton>
+            </div>
+          ) : null}
         </section>
 
         <footer><span className="settings-save-message" role="status">{formMessage}</span><button type="button" onClick={onClose}>取消</button><CommandButton icon={Settings} tone="primary" onClick={save} disabled={saving}>{saving ? '保存中' : '保存设置'}</CommandButton></footer>

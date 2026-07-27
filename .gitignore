@@ -35,5 +35,8 @@ AGENTS.md
 .env
 .env.*
 !.env.example
+secrets/
+*.pem
+!electron/keys/*.pem
 .DS_Store
 Thumbs.db

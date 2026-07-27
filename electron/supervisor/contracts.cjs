@@ -16,13 +16,46 @@ const DEFAULT_AGENT_POLICY = Object.freeze({
   sourceProtection: true,
   crossRoleFallback: true,
   maxAttemptsPerModel: 2,
+  maxAttemptsPerRun: 12,
   retryBackoffSeconds: 3,
   stageTimeoutMinutes: 90,
+});
+
+const DEFAULT_BUDGET = Object.freeze({
+  enabled: true,
+  currency: 'CNY',
+  maxCostPerRun: 30,
+  maxTokensPerRun: 3_000_000,
+  warnAtPercent: 70,
+  onExceed: 'pause',
 });
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
+}
+
+function normalizeBudget(raw = {}) {
+  const pricingOverrides = {};
+  if (raw.pricingOverrides && typeof raw.pricingOverrides === 'object') {
+    for (const [key, value] of Object.entries(raw.pricingOverrides)) {
+      if (!Array.isArray(value) || typeof value[0] !== 'number' || typeof value[1] !== 'number') continue;
+      pricingOverrides[String(key).slice(0, 160)] = [
+        Number(value[0]),
+        Number(value[1]),
+        typeof value[2] === 'number' ? Number(value[2]) : 0,
+      ];
+    }
+  }
+  return {
+    enabled: raw.enabled !== false,
+    currency: String(raw.currency || DEFAULT_BUDGET.currency).toUpperCase().slice(0, 3),
+    maxCostPerRun: Math.max(0, Number(raw.maxCostPerRun) || DEFAULT_BUDGET.maxCostPerRun),
+    maxTokensPerRun: boundedInteger(raw.maxTokensPerRun, DEFAULT_BUDGET.maxTokensPerRun, 100_000, 50_000_000),
+    warnAtPercent: boundedInteger(raw.warnAtPercent, DEFAULT_BUDGET.warnAtPercent, 50, 95),
+    onExceed: ['pause', 'stop'].includes(raw.onExceed) ? raw.onExceed : DEFAULT_BUDGET.onExceed,
+    pricingOverrides,
+  };
 }
 
 function normalizeAgentPolicy(raw = {}) {
@@ -33,8 +66,10 @@ function normalizeAgentPolicy(raw = {}) {
     sourceProtection: raw.sourceProtection !== false,
     crossRoleFallback: raw.crossRoleFallback !== false,
     maxAttemptsPerModel: boundedInteger(raw.maxAttemptsPerModel, DEFAULT_AGENT_POLICY.maxAttemptsPerModel, 1, 4),
+    maxAttemptsPerRun: boundedInteger(raw.maxAttemptsPerRun, DEFAULT_AGENT_POLICY.maxAttemptsPerRun, 4, 24),
     retryBackoffSeconds: boundedInteger(raw.retryBackoffSeconds, DEFAULT_AGENT_POLICY.retryBackoffSeconds, 0, 60),
     stageTimeoutMinutes: boundedInteger(raw.stageTimeoutMinutes, DEFAULT_AGENT_POLICY.stageTimeoutMinutes, 5, 240),
+    budget: normalizeBudget(raw.budget),
   };
 }
 
@@ -83,6 +118,14 @@ function createRunState({ runId = crypto.randomUUID(), stages = PIPELINE_STAGES,
       completedAt: null,
     }])),
     messages: [],
+    spend: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cost: 0,
+      pricingUnknown: false,
+      byStage: {},
+    },
   };
 }
 
@@ -127,6 +170,7 @@ function isTerminalStatus(status) {
 
 module.exports = {
   DEFAULT_AGENT_POLICY,
+  DEFAULT_BUDGET,
   PIPELINE_STAGES,
   SCHEMA_VERSION,
   STAGE_ROLES,
@@ -135,6 +179,7 @@ module.exports = {
   createRunState,
   isTerminalStatus,
   normalizeAgentPolicy,
+  normalizeBudget,
   safeSummary,
   stageRole,
 };

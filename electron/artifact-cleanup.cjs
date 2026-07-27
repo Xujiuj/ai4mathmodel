@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 
-const TRANSIENT_DIRECTORIES = new Set(['__pycache__', '.pytest_cache', '.ipynb_checkpoints', '.mypy_cache', '.ruff_cache']);
+const TRANSIENT_DIRECTORIES = new Set(['__pycache__', '.pytest_cache', '.ipynb_checkpoints', '.mypy_cache', '.ruff_cache', '.staging']);
 const TRANSIENT_SUFFIXES = [
   '.aux',
   '.out',
