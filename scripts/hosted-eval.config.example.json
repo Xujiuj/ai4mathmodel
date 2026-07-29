@@ -1,0 +1,25 @@
+{
+  "models": [
+    {
+      "id": "openai-standard",
+      "protocol": "openai",
+      "baseUrl": "https://gw.example.com/v1",
+      "model": "phase0-openai-model-id",
+      "authMode": "bearer",
+      "apiKeyEnv": "HOSTED_EVAL_OPENAI_KEY"
+    },
+    {
+      "id": "anthropic-standard",
+      "protocol": "anthropic",
+      "baseUrl": "https://gw.example.com/v1",
+      "model": "phase0-anthropic-model-id",
+      "authMode": "bearer",
+      "apiKeyEnv": "HOSTED_EVAL_ANTHROPIC_KEY"
+    }
+  ],
+  "timeoutMs": 120000,
+  "expensive": {
+    "longContextTokens": [120000, 200000],
+    "concurrency": [1, 2, 4]
+  }
+}

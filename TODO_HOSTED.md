@@ -23,7 +23,8 @@
 | 托管分支、令牌过期重签、`402` 错误码 | `electron/main.cjs`、`electron/supervisor/direct-provider.cjs` |
 | 账户 IPC 与充值入口 | `electron/preload.cjs`、`src/components/AccountPanel.jsx` |
 | 注入网关（占位符头部拼接 + sub2api 适配 + 密封上游 Key） | `gateway/` |
-| 托管链路测试 10 例（合计 81 例通过） | `tests/hosted.test.cjs` |
+| 托管链路与 Phase 0 评测器测试 13 例（合计 84 例通过） | `tests/hosted.test.cjs`、`tests/hosted-eval.test.cjs` |
+| Phase 0 自动探测器（工具调用、流式 usage、费用头、长上下文、并发） | `scripts/eval-hosted-models.cjs` |
 
 待办：
 
@@ -225,7 +226,7 @@ sub2api 的 gateway 已存在 system prompt 组装层——为伪装 Claude Code
 
 ### 模型效果评测夹具（对应"逐一验证模型效果"）
 
-新增 `scripts/eval-hosted-models.cjs`：
+`scripts/eval-hosted-models.cjs` 已实现上游能力探测与证据矩阵输出；完整模型效果评测仍需固定样例项目集与真实上游凭据：
 
 - 输入：固定样例项目集（3 套，覆盖优化/统计/仿真题型）× 候选模型列表。
 - 执行：跑完整四阶段，复用 `supervisor/artifact-gates.cjs` 对每阶段产出做通过/失败判定。

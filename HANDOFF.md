@@ -11,7 +11,7 @@
 ```bash
 npm install
 npm run dev            # vite + electron 并行
-npm test               # 81 例，node:test，纯 CJS，无需 Electron
+npm test               # 84 例，node:test，纯 CJS，无需 Electron
 npm run qa:electron    # 真实 Electron 窗口的自动化验收，产出 electron-qa-result.json 与 settings-modal-800.png
 npm run build          # 仅前端
 ```
@@ -188,4 +188,4 @@ runtime/guard/         Python 沙箱：AST 扫描 + 断网入口
 
 ## 6. 验收基线
 
-当前状态：`npm test` 81 例全过，`npm run qa:electron` 退出码 0，其中设置弹窗断言包含 `twoModeTabs`、`hostedPanelVisible`、`threeConnectionTabs`、`fitsViewport`。接手后第一件事是复现这两条基线，再开始改动。
+当前状态：`npm test` 84 例全过，`npm run qa:electron` 退出码 0，其中设置弹窗断言包含 `twoModeTabs`、`hostedPanelVisible`、`threeConnectionTabs`、`fitsViewport`。接手后第一件事是复现这两条基线，再开始改动。

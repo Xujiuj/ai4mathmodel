@@ -22,6 +22,7 @@ gateway/config.json
 scripts/build-protected-runtime.cjs
 scripts/runtime-lock.json
 scripts/runtime-python-requirements.txt
+scripts/hosted-eval.config.json
 tests/release-boundary.test.cjs
 
 # Local application data, diagnostics, and design working files
