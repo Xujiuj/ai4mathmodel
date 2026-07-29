@@ -14,6 +14,11 @@ electron/protected/
 electron/supervisor/playbooks.cjs
 electron/supervisor/retry-policy.cjs
 electron/supervisor/supervisor.cjs
+electron/hosted/endpoints.json
+gateway/playbooks.cjs
+gateway/config.json
+.backup-*/
+.last-backup
 scripts/build-protected-runtime.cjs
 scripts/runtime-lock.json
 scripts/runtime-python-requirements.txt

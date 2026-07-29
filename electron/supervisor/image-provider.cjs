@@ -7,6 +7,7 @@ const MAX_PROMPT_LENGTH = 6_000;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 120_000;
 const ALLOWED_SIZES = new Set(['auto', '1024x1024', '1536x1024', '1024x1536']);
+const FORMAT_FALLBACK_CODES = new Set(['IMAGE_HTTP_400', 'IMAGE_HTTP_422', 'IMAGE_RESPONSE_INVALID']);
 const STAGE_FIGURE_ROOTS = Object.freeze({
   analysis: 'work/01_analysis/figures',
   solving: 'work/02_solving/figures',
@@ -38,9 +39,11 @@ function outputCandidates(output) {
   return candidates;
 }
 
-function extractImageRequests(output) {
+function extractImageRequests(output, maxRequests = MAX_REQUESTS) {
+  const limit = Math.min(Math.max(Number(maxRequests) || 0, 0), MAX_REQUESTS);
   const requests = [];
   const seen = new Set();
+  if (!limit) return requests;
   for (const candidate of outputCandidates(output)) {
     const blocks = candidate.matchAll(/<figure_requests>\s*([\s\S]*?)\s*<\/figure_requests>/gi);
     for (const block of blocks) {
@@ -61,7 +64,7 @@ function extractImageRequests(output) {
         if (seen.has(identity)) continue;
         seen.add(identity);
         requests.push(request);
-        if (requests.length >= MAX_REQUESTS) return requests;
+        if (requests.length >= limit) return requests;
       }
     }
   }
@@ -130,7 +133,7 @@ async function responseBuffer(payload, fetchImpl, timeoutMs) {
   }
 }
 
-async function requestImage({ endpoint, apiKey, model, request, fetchImpl, timeoutMs }) {
+async function requestImage({ endpoint, apiKey, model, request, fetchImpl, timeoutMs, responseFormat = 'url' }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -146,7 +149,7 @@ async function requestImage({ endpoint, apiKey, model, request, fetchImpl, timeo
         model,
         n: 1,
         size: request.size,
-        response_format: 'b64_json',
+        response_format: responseFormat,
         prompt: `生成可直接用于数学建模论文的中文科学示意图。构图由内容决定，不添加图题、图注、解释段落、水印或风格说明。图中文字仅保留必要的简洁中文标签。内容：${request.prompt}`,
       }),
     });
@@ -202,8 +205,9 @@ async function generateRequestedImages({
   allowInsecureRemote = false,
   fetchImpl = globalThis.fetch,
   timeoutMs = REQUEST_TIMEOUT_MS,
+  maxRequests = MAX_REQUESTS,
 }) {
-  const requests = extractImageRequests(output);
+  const requests = extractImageRequests(output, maxRequests);
   const outcome = { requested: requests.length, generated: 0, failed: 0, artifactRefs: [], errors: [] };
   if (!requests.length) return outcome;
   if (connection.protocol !== 'openai' || !connection.baseUrl || !(model || connection.model) || typeof fetchImpl !== 'function') {
@@ -217,17 +221,27 @@ async function generateRequestedImages({
     return { ...outcome, failed: requests.length, errors: requests.map((request) => ({ path: request.path, code: errorCode(error) })) };
   }
 
+  let responseFormat = 'url';
   for (const request of requests) {
     try {
       const relative = safeRelativeTarget(stage, request.path);
-      const buffer = await requestImage({
+      const call = (format) => requestImage({
         endpoint,
         apiKey,
         model: model || connection.model,
         request,
         fetchImpl,
         timeoutMs: Math.max(1_000, Math.min(Number(timeoutMs) || REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_MS)),
+        responseFormat: format,
       });
+      let buffer;
+      try {
+        buffer = await call(responseFormat);
+      } catch (error) {
+        if (responseFormat !== 'url' || !FORMAT_FALLBACK_CODES.has(errorCode(error))) throw error;
+        responseFormat = 'b64_json';
+        buffer = await call(responseFormat);
+      }
       await writeImage(root, relative, buffer);
       outcome.generated += 1;
       outcome.artifactRefs.push(relative);

@@ -40,6 +40,10 @@ contextBridge.exposeInMainWorld('modelingDesktop', {
   importLocalModelConfig: (source) => invoke('settings:import-local', { source }),
   getSettings: () => invoke('settings:get'),
   saveSettings: (settings) => invoke('settings:save', settings),
+  getAccount: () => invoke('account:get'),
+  loginAccount: (email, password) => invoke('account:login', { email, password }),
+  logoutAccount: () => invoke('account:logout'),
+  openTopUp: () => invoke('account:top-up'),
   onRunEvent: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('pipeline:event', handler);

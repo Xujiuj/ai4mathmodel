@@ -15,6 +15,8 @@ export const DEFAULT_SETTINGS = {
   autoSave: true,
   compactMode: false,
   skipBudgetPrompt: false,
+  mode: 'hosted',
+  tiers: { reasoning: '', writing: '', image: '' },
   pythonSandbox: {
     memoryLimitMB: 4096,
     allowNetwork: false,

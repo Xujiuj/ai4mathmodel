@@ -5,6 +5,7 @@ function browserPreviewApi() {
     appInfo: async () => ({ version: '0.1.0', platform: 'browser-preview', electron: null, desktopRuntime: false }),
     listProjects: async () => [],
     getSettings: async () => ({}),
+    getAccount: async () => ({ configured: false, signedIn: false }),
     activeRun: async () => null,
     activeRuns: async () => [],
     listCheckpoints: async () => [],
@@ -37,6 +38,9 @@ function browserPreviewApi() {
     listModels: desktopUnavailable,
     importLocalModelConfig: desktopUnavailable,
     saveSettings: desktopUnavailable,
+    loginAccount: desktopUnavailable,
+    logoutAccount: desktopUnavailable,
+    openTopUp: desktopUnavailable,
   };
 }
 

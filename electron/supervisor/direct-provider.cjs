@@ -90,6 +90,7 @@ function providerError(code, status = 0) {
   const messages = {
     MODEL_CONFIGURATION_INVALID: '模型配置不完整或接口协议不受支持。',
     MODEL_AUTH_FAILED: '模型服务鉴权失败。',
+    MODEL_BALANCE_EXHAUSTED: '账户余额不足，请先充值后继续。',
     MODEL_RATE_LIMITED: '模型服务触发限流或配额保护。',
     MODEL_UNAVAILABLE: '模型服务暂时不可用。',
     MODEL_CONTEXT_LIMIT: '模型上下文超出服务限制。',
@@ -129,8 +130,20 @@ function providerEndpoint(connection = {}) {
   return `${baseUrl.replace(/\/chat\/completions$/i, '')}/chat/completions`;
 }
 
-function providerHeaders(protocol, apiKey = '', authMode = 'api-key') {
-  const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
+const ALLOWED_EXTRA_HEADERS = new Set(['X-Device-Id', 'X-Stage']);
+
+function sanitizeExtraHeaders(extra = {}) {
+  const headers = {};
+  for (const [name, value] of Object.entries(extra || {})) {
+    if (!ALLOWED_EXTRA_HEADERS.has(name)) continue;
+    const text = String(value ?? '').replace(/[^\x20-\x7e]/g, '').slice(0, 200);
+    if (text) headers[name] = text;
+  }
+  return headers;
+}
+
+function providerHeaders(protocol, apiKey = '', authMode = 'api-key', extraHeaders = {}) {
+  const headers = { Accept: 'application/json', 'Content-Type': 'application/json', ...sanitizeExtraHeaders(extraHeaders) };
   if (protocol === 'anthropic') {
     headers['anthropic-version'] = ANTHROPIC_VERSION;
     if (apiKey && authMode === 'bearer') headers.Authorization = `Bearer ${apiKey}`;
@@ -190,6 +203,70 @@ function openAiAnswer(payload) {
   return { text: cleanText(textFromContent(message.content)), toolCalls, assistant: message, usage };
 }
 
+function mergeStreamDelta(message, chunk) {
+  const delta = chunk?.choices?.[0]?.delta;
+  if (!delta || typeof delta !== 'object') return;
+  if (typeof delta.content === 'string') message.content += delta.content;
+  else if (Array.isArray(delta.content)) message.content += textFromContent(delta.content);
+  if (!Array.isArray(delta.tool_calls)) return;
+  for (const call of delta.tool_calls) {
+    const index = Math.max(0, Math.min(Number(call?.index) || 0, 64));
+    if (!message.tool_calls[index]) message.tool_calls[index] = { id: '', type: 'function', function: { name: '', arguments: '' } };
+    const slot = message.tool_calls[index];
+    if (call?.id) slot.id = String(call.id).slice(0, 160);
+    if (call?.function?.name) slot.function.name += String(call.function.name);
+    if (typeof call?.function?.arguments === 'string') slot.function.arguments += call.function.arguments;
+  }
+}
+
+// 长任务经中转与反向代理时，非流式响应易被空闲超时掐断，因此托管链路统一用 SSE 增量重组。
+async function readOpenAiStream(response) {
+  const reader = response?.body?.getReader?.();
+  if (!reader) throw providerError('MODEL_RESPONSE_INVALID');
+  const decoder = new TextDecoder();
+  const message = { role: 'assistant', content: '', tool_calls: [] };
+  let buffer = '';
+  let size = 0;
+  let usage = null;
+  let done = false;
+
+  while (!done) {
+    const step = await reader.read();
+    if (step.done) break;
+    size += step.value?.length || 0;
+    if (size > MAX_RESPONSE_BYTES) throw providerError('MODEL_RESPONSE_INVALID');
+    buffer += decoder.decode(step.value, { stream: true });
+    let breakIndex = buffer.indexOf('\n');
+    while (breakIndex >= 0) {
+      const line = buffer.slice(0, breakIndex).trim();
+      buffer = buffer.slice(breakIndex + 1);
+      breakIndex = buffer.indexOf('\n');
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') {
+        done = true;
+        break;
+      }
+      let chunk;
+      try {
+        chunk = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (chunk?.error) throw providerError('MODEL_UNAVAILABLE');
+      mergeStreamDelta(message, chunk);
+      if (chunk?.usage) usage = chunk.usage;
+    }
+  }
+
+  const toolCalls = message.tool_calls.filter((call) => call?.function?.name);
+  if (!message.content && !toolCalls.length) throw providerError('MODEL_RESPONSE_INVALID');
+  return {
+    choices: [{ message: { ...message, tool_calls: toolCalls.length ? toolCalls : undefined } }],
+    usage,
+  };
+}
+
 function ollamaAnswer(payload) {
   const message = payload?.message;
   if (!message || typeof message !== 'object') throw providerError('MODEL_RESPONSE_INVALID');
@@ -247,6 +324,7 @@ async function responseJson(response) {
 
 function statusError(status) {
   if (status === 401 || status === 403) return providerError('MODEL_AUTH_FAILED', status);
+  if (status === 402) return providerError('MODEL_BALANCE_EXHAUSTED', status);
   if (status === 429) return providerError('MODEL_RATE_LIMITED', status);
   if (status === 408 || status === 504) return providerError('MODEL_REQUEST_TIMEOUT', status);
   if (status === 400 || status === 404 || status === 422) return providerError('MODEL_CONTEXT_LIMIT', status);
@@ -279,7 +357,7 @@ function serializeToolResult(value) {
   });
 }
 
-function createRequest(protocol, { model, systemPrompt, messages, tools }) {
+function createRequest(protocol, { model, systemPrompt, messages, tools, stream = false }) {
   if (protocol === 'anthropic') {
     return {
       model,
@@ -294,11 +372,19 @@ function createRequest(protocol, { model, systemPrompt, messages, tools }) {
     ...messages,
   ];
   if (protocol === 'ollama') return { model, stream: false, messages: normalizedMessages, tools: providerTools(protocol, tools) };
-  return { model, messages: normalizedMessages, tools: providerTools(protocol, tools), tool_choice: 'auto', temperature: 0.2 };
+  return {
+    model,
+    messages: normalizedMessages,
+    tools: providerTools(protocol, tools),
+    tool_choice: 'auto',
+    temperature: 0.2,
+    ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
+  };
 }
 
-async function callProvider({ connection, apiKey, systemPrompt, messages, tools, fetchImpl, timeoutMs, signal }) {
+async function callProvider({ connection, apiKey, systemPrompt, messages, tools, fetchImpl, timeoutMs, signal, extraHeaders, stream = false }) {
   const protocol = protocolFor(connection);
+  const streaming = Boolean(stream) && protocol === 'openai';
   const endpoint = providerEndpoint(connection);
   const controller = new AbortController();
   const onAbort = () => controller.abort();
@@ -308,17 +394,22 @@ async function callProvider({ connection, apiKey, systemPrompt, messages, tools,
   try {
     const response = await fetchImpl(endpoint, {
       method: 'POST',
-      headers: providerHeaders(protocol, apiKey, connection.authMode),
+      headers: {
+        ...providerHeaders(protocol, apiKey, connection.authMode, extraHeaders),
+        ...(streaming ? { Accept: 'text/event-stream' } : {}),
+      },
       body: JSON.stringify(createRequest(protocol, {
         model: cleanText(connection.model, 240),
         systemPrompt,
         messages: trimHistory(messages, protocol),
         tools,
+        stream: streaming,
       })),
       redirect: 'error',
       signal: controller.signal,
     });
     if (!response?.ok) throw statusError(Number(response?.status) || 0);
+    if (streaming) return { protocol, ...openAiAnswer(await readOpenAiStream(response)) };
     const payload = await responseJson(response);
     if (protocol === 'anthropic') return { protocol, ...anthropicAnswer(payload) };
     if (protocol === 'ollama') return { protocol, ...ollamaAnswer(payload) };
@@ -358,6 +449,8 @@ async function runDirectAgent({
   fetchImpl = globalThis.fetch,
   timeoutMs = 120_000,
   signal,
+  extraHeaders,
+  stream = false,
   maxTurns = MAX_TURNS,
 } = {}) {
   if (typeof fetchImpl !== 'function' || typeof executeTool !== 'function' || !connection.model || !connection.baseUrl) {
@@ -380,6 +473,8 @@ async function runDirectAgent({
       fetchImpl,
       timeoutMs,
       signal,
+      extraHeaders,
+      stream,
     });
 
     if (answer.usage) {

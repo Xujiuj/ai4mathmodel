@@ -1,0 +1,35 @@
+{
+  "port": 8788,
+  "upstream": "http://127.0.0.1:8080",
+  "publicBaseUrl": "https://gw.example.com",
+  "portal": "https://portal.example.com",
+  "tokenSecret": "change-me-32-bytes-minimum-secret",
+  "keySecret": "change-me-another-32-bytes-secret",
+  "accessTokenTtlSeconds": 900,
+  "requestTimeoutMs": 600000,
+  "maxBodyBytes": 8388608,
+  "imageEnabled": true,
+  "maxImagesPerStage": 1,
+  "tiers": [
+    {
+      "id": "standard",
+      "label": "标准",
+      "models": {
+        "reasoning": "REPLACE_AFTER_PHASE0",
+        "writing": "REPLACE_AFTER_PHASE0",
+        "image": ""
+      }
+    }
+  ],
+  "defaultTiers": {
+    "reasoning": "standard",
+    "writing": "standard",
+    "image": "standard"
+  },
+  "sub2api": {
+    "loginPath": "/api/v1/auth/login",
+    "profilePath": "/api/v1/user/profile",
+    "apiKeysPath": "/api/v1/user/api-keys",
+    "topUpPath": "/dashboard/topup"
+  }
+}

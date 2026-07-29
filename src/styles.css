@@ -453,10 +453,12 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .modal-form footer, .settings-content > footer { margin-top: 17px; display: flex; justify-content: flex-end; gap: 6px; }
 .modal-form footer > button:first-child, .settings-content > footer > button:first-child { height: 32px; padding: 0 12px; border: 0; background: transparent; cursor: pointer; }
 .settings-content { min-height: 0; padding: 0 17px 17px; overflow: auto; }
-.settings-connection-tabs { position: sticky; top: 0; z-index: 3; height: 43px; margin: 0 -17px; padding: 0 17px; border-bottom: 1px solid var(--line); background: var(--surface-elevated); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.settings-connection-tabs button { min-width: 0; padding: 0 10px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 10.5px; white-space: nowrap; }
-.settings-connection-tabs button:hover { background: var(--surface-hover); color: var(--ink); }
-.settings-connection-tabs button.active { color: var(--accent); box-shadow: inset 0 -2px var(--accent); font-weight: 700; }
+.settings-connection-tabs, .settings-mode-tabs { position: sticky; top: 0; z-index: 3; height: 43px; margin: 0 -17px; padding: 0 17px; border-bottom: 1px solid var(--line); background: var(--surface-elevated); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.settings-mode-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.settings-connection-tabs button, .settings-mode-tabs button { min-width: 0; padding: 0 10px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 10.5px; white-space: nowrap; }
+.settings-connection-tabs button:hover, .settings-mode-tabs button:hover { background: var(--surface-hover); color: var(--ink); }
+.settings-connection-tabs button.active, .settings-mode-tabs button.active { color: var(--accent); box-shadow: inset 0 -2px var(--accent); font-weight: 700; }
+.settings-content .settings-connection-tabs { top: 43px; z-index: 2; }
 .settings-content section { padding: 14px 0; border-bottom: 1px solid var(--line); }
 .local-config-import { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .local-config-import > div:first-child { min-width: 0; }
@@ -513,6 +515,15 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .command-preview { min-height: 34px; padding: 7px 9px; border: 1px solid var(--line); background: var(--code-preview); color: var(--ink); display: flex; align-items: center; gap: 9px; font-size: 9px; }
 .command-preview span { color: var(--muted); }
 .command-preview code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-hint { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.account-login { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 0 13px; }
+.account-login .command-button { margin-bottom: 11px; }
+.account-balance { min-height: 46px; margin-bottom: 11px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-subtle); display: flex; align-items: center; gap: 9px; }
+.account-balance strong { font-size: 15px; }
+.account-balance small { margin-left: auto; color: var(--muted); font-size: 9px; }
+.account-actions { display: flex; gap: 7px; }
+.account-actions .command-button { min-height: 30px; font-size: 10px; }
+.account-tiers { margin-top: 13px; display: grid; grid-template-columns: 1fr 1fr; gap: 0 13px; }
 .preference-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 21px; }
 .diagnostic-list { border: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr; }
 .diagnostic-list article { min-height: 43px; padding: 7px 8px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 18px 62px minmax(0, 1fr); align-items: center; gap: 5px; }

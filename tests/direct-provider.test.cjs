@@ -17,6 +17,22 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
+function streamResponse(events) {
+  const encoder = new TextEncoder();
+  const chunks = events.map((event) => encoder.encode(`data: ${typeof event === 'string' ? event : JSON.stringify(event)}\n\n`));
+  let cursor = 0;
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: {
+      getReader: () => ({
+        read: async () => (cursor < chunks.length ? { done: false, value: chunks[cursor++] } : { done: true }),
+      }),
+    },
+  };
+}
+
 const tool = [{
   name: 'read_workspace_file',
   description: 'Read a text file.',
@@ -79,6 +95,49 @@ test('runs an OpenAI-compatible tool loop through the configured endpoint', asyn
   assert.equal(requests[0].body.messages[0].role, 'system');
   assert.equal(requests[1].body.messages.at(-1).role, 'tool');
   assert.match(requests[1].body.messages.at(-1).content, /source text/);
+});
+
+test('reassembles a streamed tool loop and reports streamed usage', async () => {
+  const requests = [];
+  const result = await runDirectAgent({
+    connection: { protocol: 'openai', baseUrl: 'https://gw.example/v1', model: 'hosted-model' },
+    apiKey: 'access-token',
+    systemPrompt: '@@PB1|analysis....|rw|@@',
+    prompt: '开始执行 analysis 阶段。',
+    tools: tool,
+    stream: true,
+    extraHeaders: { 'X-Stage': 'analysis', 'X-Forbidden': 'drop-me' },
+    executeTool: async () => ({ ok: true, content: 'source text' }),
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options, body: JSON.parse(options.body) });
+      if (requests.length === 1) {
+        return streamResponse([
+          { choices: [{ delta: { role: 'assistant' } }] },
+          { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call-1', function: { name: 'read_workspace', arguments: '{"path":' } }] } }] },
+          { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: '_file', arguments: '"inputs/a.txt"}' } }] } }] },
+          '[DONE]',
+        ]);
+      }
+      return streamResponse([
+        { choices: [{ delta: { content: '阶段' } }] },
+        { choices: [{ delta: { content: '完成。' } }] },
+        { choices: [], usage: { prompt_tokens: 120, completion_tokens: 30 } },
+        '[DONE]',
+      ]);
+    },
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, '阶段完成。');
+  assert.equal(result.toolCallCount, 1);
+  assert.equal(result.usage.inputTokens, 120);
+  assert.equal(result.usage.outputTokens, 30);
+  assert.equal(requests[0].body.stream, true);
+  assert.deepEqual(requests[0].body.stream_options, { include_usage: true });
+  assert.equal(requests[0].options.headers.Accept, 'text/event-stream');
+  assert.equal(requests[0].options.headers['X-Stage'], 'analysis');
+  assert.equal('X-Forbidden' in requests[0].options.headers, false);
+  assert.equal(requests[1].body.messages.at(-1).role, 'tool');
 });
 
 test('runs an Anthropic Messages tool loop with native tool results', async () => {

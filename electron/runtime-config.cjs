@@ -2,6 +2,7 @@ const APPEARANCES = new Set(['light', 'dark', 'system']);
 const CONNECTION_KEYS = Object.freeze(['reasoning', 'writing', 'image']);
 const PROTOCOLS = new Set(['openai', 'ollama', 'anthropic']);
 const AUTH_MODES = new Set(['api-key', 'bearer']);
+const MODES = new Set(['hosted', 'byok']);
 
 const { DEFAULT_AGENT_POLICY, normalizeAgentPolicy } = require('./supervisor/contracts.cjs');
 
@@ -13,11 +14,15 @@ const EMPTY_CONNECTION = Object.freeze({
   allowInsecureRemote: false,
 });
 
+const EMPTY_TIERS = Object.freeze(Object.fromEntries(CONNECTION_KEYS.map((key) => [key, ''])));
+
 const DEFAULT_SETTINGS = Object.freeze({
   appearance: 'light',
   autoSave: true,
   compactMode: false,
   skipBudgetPrompt: false,
+  mode: 'hosted',
+  tiers: EMPTY_TIERS,
   agentPolicy: DEFAULT_AGENT_POLICY,
   pricingOverrides: Object.freeze({}),
   pythonSandbox: Object.freeze({ memoryLimitMB: 4096, allowNetwork: false }),
@@ -76,8 +81,21 @@ function normalizePricingOverrides(raw = {}) {
   return overrides;
 }
 
+function normalizeTiers(raw = {}) {
+  return Object.fromEntries(CONNECTION_KEYS.map((key) => [key, cleanText(raw?.[key], '', 40)]));
+}
+
+function normalizeMode(raw = {}) {
+  if (MODES.has(raw.mode)) return raw.mode;
+  const configured = (source = {}) => Boolean(source.baseUrl || source.model || source.provider);
+  const legacyConfigured = configured(raw)
+    || CONNECTION_KEYS.some((key) => configured(raw.connections?.[key]));
+  return legacyConfigured ? 'byok' : DEFAULT_SETTINGS.mode;
+}
+
 function normalizeSettings(raw = {}) {
   const appearance = APPEARANCES.has(raw.appearance) ? raw.appearance : DEFAULT_SETTINGS.appearance;
+  const mode = normalizeMode(raw);
   const legacyReasoning = {
     provider: raw.provider,
     baseUrl: raw.baseUrl,
@@ -106,11 +124,32 @@ function normalizeSettings(raw = {}) {
     autoSave: raw.autoSave !== false,
     compactMode: Boolean(raw.compactMode),
     skipBudgetPrompt: Boolean(raw.skipBudgetPrompt),
+    mode,
+    tiers: normalizeTiers(raw.tiers),
     agentPolicy,
     pricingOverrides,
     pythonSandbox: normalizePythonSandbox(raw.pythonSandbox),
     connections,
   };
+}
+
+// 托管态的三类连接完全由服务端 catalog 重建，本地填写的地址、模型与定价覆盖不参与托管链路。
+function applyHostedCatalog(settings, catalog = {}) {
+  const normalized = normalizeSettings(settings);
+  if (normalized.mode !== 'hosted') return normalized;
+  const baseUrl = cleanText(catalog.baseUrl, '', 2048);
+  const connections = Object.fromEntries(CONNECTION_KEYS.map((key) => {
+    const tierId = normalized.tiers[key] || cleanText(catalog.defaultTiers?.[key], '', 40);
+    const tier = (Array.isArray(catalog.tiers) ? catalog.tiers : []).find((item) => item?.id === tierId);
+    return [key, normalizeConnection({
+      provider: 'hosted',
+      baseUrl,
+      protocol: 'openai',
+      model: tier?.models?.[key] || tier?.model || '',
+      authMode: 'bearer',
+    })];
+  }));
+  return { ...normalized, connections, pricingOverrides: {} };
 }
 
 function resolveModel(settings, stage) {
@@ -121,6 +160,8 @@ function resolveModel(settings, stage) {
 module.exports = {
   CONNECTION_KEYS,
   DEFAULT_SETTINGS,
+  MODES,
+  applyHostedCatalog,
   normalizeSettings,
   resolveModel,
 };

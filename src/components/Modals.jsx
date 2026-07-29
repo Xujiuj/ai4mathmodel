@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { DEFAULT_SETTINGS, MODEL_CONNECTIONS } from '../modelConfig.js';
+import { AccountPanel } from './AccountPanel.jsx';
 import { CommandButton, IconButton } from './Shell.jsx';
 
 export function Modal({ title, children, onClose, width = 520 }) {
@@ -172,6 +173,21 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
   return (
     <Modal title="模型设置" onClose={onClose} width={800}>
       <div className="settings-content">
+        <nav className="settings-mode-tabs" role="tablist" aria-label="模型来源">
+          {[['hosted', '官方托管'], ['byok', '自带模型']].map(([value, label]) => (
+            <button type="button" role="tab" aria-selected={form.mode === value} className={form.mode === value ? 'active' : ''} key={value} onClick={() => update('mode', value)}>{label}</button>
+          ))}
+        </nav>
+
+        {form.mode === 'hosted' ? (
+          <AccountPanel
+            activeTiers={form.tiers}
+            onTierChange={(key, value) => setForm((current) => ({ ...current, tiers: { ...current.tiers, [key]: value } }))}
+          />
+        ) : null}
+
+        {form.mode === 'hosted' ? null : (
+        <>
         <nav className="settings-connection-tabs" role="tablist" aria-label="模型类型">
           {MODEL_CONNECTIONS.map(([key, title]) => (
             <button type="button" role="tab" aria-selected={activeConnection === key} className={activeConnection === key ? 'active' : ''} key={key} onClick={() => setActiveConnection(key)}>{title}</button>
@@ -198,6 +214,8 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
           </div>
           <div className="model-discovery-row"><button type="button" className="command-button command-primary" onClick={() => testConnection(activeConnection)} disabled={result.status === 'loading'}><RefreshCw size={14} className={result.status === 'loading' ? 'spinning' : ''} />测试连接并读取模型</button><span className={`discovery-message discovery-${result.status}`}>{result.message || '尚未测试连接'}</span></div>
         </section>
+        </>
+        )}
 
         <section className="preference-section">
           <h3>工作区</h3>

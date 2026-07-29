@@ -271,6 +271,15 @@ app.whenReady().then(async () => {
     await wait(120);
     const modal = document.querySelector('.modal');
     const scrollSurface = document.querySelector('.settings-content');
+    const modeTabs = [...document.querySelectorAll('.settings-mode-tabs button')];
+    const hostedTab = modeTabs.find((item) => item.textContent.includes('官方托管'));
+    const localTab = modeTabs.find((item) => item.textContent.includes('自带模型'));
+    hostedTab?.click();
+    await wait(80);
+    const hostedPanelVisible = Boolean(document.querySelector('.account-panel'))
+      && !document.querySelector('.connection-block');
+    localTab?.click();
+    await wait(80);
     const tabs = [...document.querySelectorAll('.settings-connection-tabs button')];
     const titles = [];
     let connectionActionVisible = true;
@@ -286,6 +295,8 @@ app.whenReady().then(async () => {
     const scrollMoved = Boolean(scrollSurface && scrollSurface.scrollTop > 0);
     if (scrollSurface) scrollSurface.scrollTop = 0;
     return {
+      twoModeTabs: modeTabs.length === 2,
+      hostedPanelVisible,
       threeConnectionTabs: tabs.length === 3,
       switchesConnections: titles.join('|') === '推理与代码模型|文本模型|生图模型（可选）',
       connectionActionVisible,

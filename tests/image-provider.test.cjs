@@ -74,3 +74,45 @@ test('calls a custom OpenAI-compatible image endpoint and writes only inside the
   assert.equal(generated.subarray(1, 4).toString('ascii'), 'PNG');
   await assert.rejects(fs.access(path.join(root, '..', 'escape.png')));
 });
+
+test('requests image URLs first and falls back to base64 when the provider rejects the format', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'modeling-image-format-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const formats = [];
+  const server = http.createServer((request, response) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      formats.push(body.response_format);
+      if (body.response_format === 'url') {
+        response.writeHead(400, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ error: { message: 'response_format not supported' } }));
+        return;
+      }
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ data: [{ b64_json: ONE_PIXEL_PNG }] }));
+    });
+  });
+  const port = await listen(server);
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const output = '<figure_requests>{"requests":[{"path":"work/03_paper/figures/a.png","prompt":"中文机制示意图","size":"1024x1024"},{"path":"work/03_paper/figures/b.png","prompt":"第二幅中文示意图","size":"1024x1024"}]}</figure_requests>';
+  const result = await generateRequestedImages({
+    root,
+    stage: 'paper',
+    output,
+    connection: { baseUrl: `http://127.0.0.1:${port}/v1`, protocol: 'openai', model: 'image-model' },
+    apiKey: 'test-secret-key',
+    allowInsecureRemote: true,
+  });
+
+  assert.equal(result.generated, 2);
+  assert.deepEqual(formats, ['url', 'b64_json', 'b64_json']);
+});
+
+test('honours a hosted per-stage image cap', () => {
+  const output = '<figure_requests>{"requests":[{"path":"work/03_paper/figures/a.png","prompt":"图一","size":"1024x1024"},{"path":"work/03_paper/figures/b.png","prompt":"图二","size":"1024x1024"}]}</figure_requests>';
+  assert.equal(extractImageRequests(output, 1).length, 1);
+  assert.equal(extractImageRequests(output, 0).length, 0);
+});
