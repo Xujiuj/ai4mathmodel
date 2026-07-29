@@ -92,10 +92,17 @@ export function AccountPanel({ tiers, activeTiers, onTierChange }) {
         <small>累计消费 {formatAmount(account.totalSpend, account.currency)}</small>
       </div>
       <div className="account-actions">
-        <CommandButton icon={CreditCard} tone="primary" disabled={busy} onClick={() => run(() => desktopApi.openTopUp(), '无法打开充值页面。')}>充值</CommandButton>
+        <CommandButton
+          icon={CreditCard}
+          tone="primary"
+          disabled={busy || !state.topUpEnabled}
+          title={state.topUpEnabled ? '打开充值页面' : '支付通道尚未配置'}
+          onClick={() => run(() => desktopApi.openTopUp(), '无法打开充值页面。')}
+        >充值</CommandButton>
         <CommandButton icon={RefreshCw} disabled={busy} onClick={() => run(async () => {}, '刷新失败。')}>刷新余额</CommandButton>
         <CommandButton icon={LogOut} disabled={busy} onClick={() => run(() => desktopApi.logoutAccount(), '退出失败。')}>退出登录</CommandButton>
       </div>
+      {!state.topUpEnabled ? <p className="account-hint">支付通道尚未配置，暂不支持在线充值。</p> : null}
       {options.length ? (
         <div className="account-tiers">
           {[['reasoning', '推理与代码'], ['writing', '文本']].map(([key, label]) => (

@@ -60,7 +60,7 @@ function finiteNumber(value) {
 
 function createSub2apiAdapter({ base, paths }) {
   if (!base) throw new Error('SUB2API_CONFIG_INVALID:base');
-  for (const field of ['loginPath', 'profilePath', 'usagePath', 'apiKeysPath']) {
+  for (const field of ['loginPath', 'profilePath', 'usagePath', 'usageListPath', 'apiKeysPath']) {
     if (!paths?.[field]) throw new Error(`SUB2API_CONFIG_INVALID:${field}`);
   }
 
@@ -106,6 +106,43 @@ function createSub2apiAdapter({ base, paths }) {
       const active = entries.find((item) => item?.status === 'active' && item.key);
       if (!active) throw Object.assign(new Error('SUB2API_NO_ACTIVE_KEY'), { status: 502 });
       return String(active.key);
+    },
+
+    async billing(token, requestIds = []) {
+      const ids = [...new Set((Array.isArray(requestIds) ? requestIds : [])
+        .map((value) => String(value || '').trim().slice(0, 160))
+        .filter(Boolean))].slice(0, 72);
+      const [profileResponse, ...usageResponses] = await Promise.all([
+        requestJson(base, paths.profilePath, { token }),
+        ...ids.map((requestId) => {
+          const query = new URLSearchParams({ request_id: requestId, page: '1', page_size: '20' });
+          return requestJson(base, `${paths.usageListPath}?${query}`, { token });
+        }),
+      ]);
+      if (profileResponse.status !== 200) {
+        throw Object.assign(new Error('SUB2API_PROFILE_FAILED'), { status: profileResponse.status });
+      }
+      const profile = envelopeData(profileResponse.body, 'SUB2API_PROFILE_SHAPE');
+      const costs = [];
+      const missingRequestIds = [];
+      for (const [index, response] of usageResponses.entries()) {
+        if (response.status !== 200) {
+          throw Object.assign(new Error('SUB2API_USAGE_FAILED'), { status: response.status });
+        }
+        const data = envelopeData(response.body, 'SUB2API_USAGE_SHAPE');
+        const requestId = ids[index];
+        const item = (Array.isArray(data.items) ? data.items : [])
+          .find((entry) => String(entry?.request_id || '') === requestId);
+        if (!item) missingRequestIds.push(requestId);
+        else costs.push(finiteNumber(item.actual_cost));
+      }
+      return {
+        actualCost: costs.reduce((total, value) => total + value, 0),
+        balance: finiteNumber(profile.balance),
+        currency: 'USD',
+        complete: missingRequestIds.length === 0,
+        missingRequestIds,
+      };
     },
   };
 }

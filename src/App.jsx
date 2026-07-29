@@ -48,6 +48,11 @@ function nowLabel(timestamp = Date.now()) {
   return new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false });
 }
 
+function formatSpendAmount(value, currency = 'CNY') {
+  const code = String(currency || 'CNY').toUpperCase();
+  return `${code === 'CNY' ? '¥' : `${code} `}${Number(value || 0).toFixed(2)}`;
+}
+
 function mergeSettings(stored = {}) {
   return {
     ...DEFAULT_SETTINGS,
@@ -69,7 +74,8 @@ function StatusBar({ project, running, appInfo, settings, activeStage, spend }) 
       {spend?.tokens > 0 ? (
         <span className={spend.pricingUnknown ? 'pricing-unknown' : 'spend-indicator'}>
           {spend.tokens.toLocaleString()} tokens
-          {!spend.pricingUnknown ? ` · ¥${Number(spend.cost || 0).toFixed(2)}` : ''}
+          {!spend.pricingUnknown ? ` · ${spend.authoritative ? '' : '约 '}${formatSpendAmount(spend.cost, spend.currency)}` : ''}
+          {!spend.pricingUnknown && typeof spend.balance === 'number' ? ` · 余额 ${formatSpendAmount(spend.balance, spend.currency)}` : ''}
         </span>
       ) : null}
       <span className="status-model"><Cpu size={12} />{modelSummary(settings, activeStage)}</span>
@@ -109,7 +115,7 @@ export function App() {
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
   const [running, setRunning] = useState(false);
   const [activeRuns, setActiveRuns] = useState([]);
-  const [spend, setSpend] = useState({ cost: 0, tokens: 0, pricingUnknown: false });
+  const [spend, setSpend] = useState({ cost: 0, tokens: 0, pricingUnknown: false, authoritative: false, balance: null, currency: 'CNY' });
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [resolvedTheme, setResolvedTheme] = useState('light');
   const [appInfo, setAppInfo] = useState(null);
@@ -306,6 +312,9 @@ export function App() {
           cost: Number(event.cost) || 0,
           tokens: Number(event.tokens) || 0,
           pricingUnknown: Boolean(event.pricingUnknown),
+          authoritative: Boolean(event.authoritative),
+          balance: typeof event.balance === 'number' ? event.balance : null,
+          currency: String(event.currency || 'CNY'),
         });
       }
       if (event.type === 'pipeline-complete') {

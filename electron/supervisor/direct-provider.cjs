@@ -391,6 +391,7 @@ async function callProvider({ connection, apiKey, systemPrompt, messages, tools,
   if (signal?.aborted) controller.abort();
   signal?.addEventListener?.('abort', onAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), Math.max(1_000, Math.min(Number(timeoutMs) || 120_000, 12 * 60 * 1000)));
+  let requestId = '';
   try {
     const response = await fetchImpl(endpoint, {
       method: 'POST',
@@ -408,14 +409,22 @@ async function callProvider({ connection, apiKey, systemPrompt, messages, tools,
       redirect: 'error',
       signal: controller.signal,
     });
-    if (!response?.ok) throw statusError(Number(response?.status) || 0);
-    if (streaming) return { protocol, ...openAiAnswer(await readOpenAiStream(response)) };
+    requestId = cleanText(response?.headers?.get?.('x-request-id'), 160);
+    if (!response?.ok) {
+      const error = statusError(Number(response?.status) || 0);
+      if (requestId) error.requestId = requestId;
+      throw error;
+    }
+    if (streaming) return { protocol, requestId, ...openAiAnswer(await readOpenAiStream(response)) };
     const payload = await responseJson(response);
-    if (protocol === 'anthropic') return { protocol, ...anthropicAnswer(payload) };
-    if (protocol === 'ollama') return { protocol, ...ollamaAnswer(payload) };
-    return { protocol, ...openAiAnswer(payload) };
+    if (protocol === 'anthropic') return { protocol, requestId, ...anthropicAnswer(payload) };
+    if (protocol === 'ollama') return { protocol, requestId, ...ollamaAnswer(payload) };
+    return { protocol, requestId, ...openAiAnswer(payload) };
   } catch (error) {
-    if (error?.code?.startsWith?.('MODEL_')) throw error;
+    if (error?.code?.startsWith?.('MODEL_')) {
+      if (requestId && !error.requestId) error.requestId = requestId;
+      throw error;
+    }
     if (controller.signal.aborted || error?.name === 'AbortError') throw providerError('MODEL_REQUEST_TIMEOUT');
     throw providerError('MODEL_NETWORK_ERROR');
   } finally {
@@ -461,21 +470,31 @@ async function runDirectAgent({
   const messages = [{ role: 'user', content: cleanText(prompt, 80_000) }];
   let toolCallCount = 0;
   const totalUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+  const requestIds = [];
 
   for (let turn = 0; turn < Math.max(1, Math.min(Number(maxTurns) || MAX_TURNS, MAX_TURNS)); turn += 1) {
     if (signal?.aborted) throw providerError('MODEL_REQUEST_TIMEOUT');
-    const answer = await callProvider({
-      connection,
-      apiKey,
-      systemPrompt,
-      messages,
-      tools,
-      fetchImpl,
-      timeoutMs,
-      signal,
-      extraHeaders,
-      stream,
-    });
+    let answer;
+    try {
+      answer = await callProvider({
+        connection,
+        apiKey,
+        systemPrompt,
+        messages,
+        tools,
+        fetchImpl,
+        timeoutMs,
+        signal,
+        extraHeaders,
+        stream,
+      });
+    } catch (error) {
+      if (error?.requestId && !requestIds.includes(error.requestId)) requestIds.push(error.requestId);
+      error.usage = totalUsage;
+      error.requestIds = requestIds;
+      throw error;
+    }
+    if (answer.requestId && !requestIds.includes(answer.requestId)) requestIds.push(answer.requestId);
 
     if (answer.usage) {
       totalUsage.inputTokens += answer.usage.inputTokens || 0;
@@ -492,6 +511,7 @@ async function runDirectAgent({
         turns: turn + 1,
         provider: protocol,
         usage: totalUsage,
+        requestIds,
       };
     }
 
@@ -516,6 +536,7 @@ async function runDirectAgent({
   }
   const error = providerError('MODEL_TOOL_LIMIT');
   error.usage = totalUsage;
+  error.requestIds = requestIds;
   throw error;
 }
 

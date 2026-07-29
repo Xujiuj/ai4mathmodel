@@ -16,8 +16,8 @@
       "label": "标准",
       "models": {
         "reasoning": "gpt-5.6-sol",
-        "writing": "REPLACE_AFTER_PHASE0",
-        "image": ""
+        "writing": "gpt-5.6-sol",
+        "image": "gpt-image-2"
       }
     }
   ],
@@ -30,7 +30,9 @@
     "loginPath": "/api/v1/auth/login",
     "profilePath": "/api/v1/user/profile",
     "usagePath": "/api/v1/usage/dashboard/stats",
+    "usageListPath": "/api/v1/usage",
     "apiKeysPath": "/api/v1/keys",
-    "topUpPath": "/dashboard/topup"
+    "topUpPath": "/purchase",
+    "topUpEnabled": false
   }
 }

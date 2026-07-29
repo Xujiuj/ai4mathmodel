@@ -11,7 +11,7 @@
 ```bash
 npm install
 npm run dev            # vite + electron 并行
-npm test               # 84 例，node:test，纯 CJS，无需 Electron
+npm test               # 97 例，node:test，纯 CJS，无需 Electron
 npm run qa:electron    # 真实 Electron 窗口的自动化验收，产出 electron-qa-result.json 与 settings-modal-800.png
 npm run build          # 仅前端
 ```
@@ -100,10 +100,12 @@ runtime/guard/         Python 沙箱：AST 扫描 + 断网入口
 | 生图优先取 URL、被拒回退 base64、每阶段张数上限 | `image-provider.cjs` |
 | 账户 IPC 与充值入口 | `preload.cjs`、`src/components/AccountPanel.jsx` |
 | 注入网关 | `gateway/` |
-| sub2api 当前用户态契约 | `gateway/sub2api.cjs`：`data.access_token`、`/api/v1/keys`、`/api/v1/usage/dashboard/stats` |
-| 托管链路测试 10 例 | `tests/hosted.test.cjs` |
+| sub2api 当前用户态契约 | `gateway/sub2api.cjs`：`data.access_token`、`/api/v1/keys`、`/api/v1/usage/dashboard/stats`、按 `request_id` 查询 `/api/v1/usage` |
+| 托管链路测试 11 例 | `tests/hosted.test.cjs` |
 
-2026-07-29 已在 Hermes 的 `/opt/sub2api` 完成 Docker Compose 加固：Sub2API 仅监听远端 `127.0.0.1:18080`，PostgreSQL/Redis 不暴露公网，镜像按摘要固定，Redis 强制认证并启用日志轮转。现有数据与生图路由已保留。active Key 已实测可调用 `gpt-5.6-sol`：普通对话、tool calling、流式 usage 与 gzip 请求体均通过；证据见 `docs/hosted-model-matrix.md`。
+2026-07-29 已在 Hermes 的 `/opt/sub2api` 完成 Docker Compose 加固：Sub2API 仅监听远端 `127.0.0.1:18080`，PostgreSQL/Redis 不暴露公网，镜像按摘要固定，Redis 强制认证并启用日志轮转。现有数据与生图路由已保留。`gpt-5.6-sol` 已通过普通对话、tool calling、流式 usage、gzip、12万/20万长上下文、并发 1/2/4 与八轮 sticky session 真机验证。生图仅 `gpt-image-2` 验证可用，并发 2/4 共 7/7 成功；证据见 `docs/hosted-model-matrix.md`。
+
+托管计费不再依赖不存在的 `X-Cost` / `X-Balance` 响应头。网关透传每轮 `x-request-id`，阶段结束后客户端调用 `/billing`，由网关使用短期令牌中 AES-GCM 密封的 sub2api 用户 JWT 查询 `/api/v1/usage`，汇总 `actual_cost` 并返回最新余额。SSE 不被缓冲，真实用户 JWT 不以明文进入签名载荷。
 
 **提示词保密的实现方式**：托管态客户端发出的 system 内容只有一个定长占位符 `@@PB1|analysis....|rw|@@`，用户消息只有一句「开始执行 X 阶段」。真实 playbook 全部在服务端 `gateway/playbooks.cjs`。网关只在请求体头部做一次定长字节替换，不解析整个 body，CPU 开销与 payload 大小无关。上游 API Key 用 AES-GCM 密封在 15 分钟短期令牌里，客户端持有但解不开，无法绕过应用直接使用号池。
 
@@ -115,24 +117,25 @@ runtime/guard/         Python 沙箱：AST 扫描 + 断网入口
 
 | 项 | 说明 |
 |---|---|
-| **Phase 0 上游验证（部分完成）** | `gpt-5.6-sol` 的 tool calling、`stream_options.include_usage`、普通对话与 gzip 请求体已通过真机验证；12万/20万长上下文、并发 2/4、八轮 sticky session、生图限流仍未验证。sub2api 不返回 `X-Cost` / `X-Balance` |
+| **Phase 0 上游验证（已完成）** | `gpt-5.6-sol` 核心、长上下文、并发与 sticky session 均通过；`gpt-image-2` 是唯一验证可用的生图模型。支付入口确认为 `/purchase`，但 Hermes `payment_enabled=false` 且无支付方法/套餐，需真实支付商凭据后才能启用 |
 | **三个配置文件** | `gateway/config.json`、`gateway/playbooks.cjs`、`electron/hosted/endpoints.json`，都有对应的 `.example` 模板且已 gitignore。打包后读不到环境变量，托管地址必须构建期落盘 |
 | **代码签名证书** | `package.json` 的 `win` 段只有 `signingHashAlgorithms`，没有证书配置。证书采购是关键路径，1–3 周；杀软误报报备另需 1–4 周 |
 | **更新服务器** | `publish.url` 还是占位符 `https://dl.example.com/mmw/${channel}/` |
 
-### 3.2 托管模式的功能缺口
+### 3.2 托管模式的余额闭环（已补齐）
 
 | 项 | 影响 |
 |---|---|
-| 状态栏余额展示 | 现在只有 token 与本地估算费用，托管态没有余额条 |
-| 运行前余额校验 | `runFullPipeline` 只检查了登录与档位可用，没有拿余额做准入判断，用户会在跑到一半时撞上 `402` |
-| 服务端权威成本回传 | 网关还没有回传 `X-Cost` / `X-Balance` 响应头，客户端也没解析，托管态费用显示依赖本地估算（已在托管态关闭费用预估弹窗，但状态栏仍走本地价目表） |
-| `runSingleStage` 未做托管前置检查 | 单阶段运行时未登录会抛出原始错误而不是友好提示 |
-| 生图档位为空的保护 | 若目录里 `imageEnabled` 为真但 `models.image` 为空，会带空模型名发请求 |
+| 状态栏余额展示 | 托管态显示 sub2api `actual_cost` 汇总和最新 USD 余额；查询未完成时不显示伪造估值 |
+| 运行前余额校验 | 完整流程与单阶段都会检查登录、档位和余额，余额不足时在启动前阻止运行 |
+| 服务端权威成本回传 | 每轮流式响应透传 `x-request-id`，阶段结束后由 `/billing` 查询 usage 明细，不缓冲 SSE |
+| `runSingleStage` 托管前置检查 | 已与完整流程共用登录、余额和档位准入逻辑 |
+| 生图档位为空的保护 | `imageEnabled` 为真但模型为空时请求上限强制为 0 |
+| 在线充值 | 目录发布 `topUpEnabled`；支付商未配置时按钮禁用，网关 `/topup` 同时拒绝请求 |
 
 ### 3.3 网关的生产化缺口
 
-网关目前是功能正确但没有生产加固的最小实现：没有限流、没有准入排队、没有请求日志与指标、没有优雅关闭、设备绑定只在令牌与请求头都带值时才比对。竞赛峰值场景下这些都要补。
+网关目前是功能正确但没有生产加固的最小实现：没有限流、没有准入排队、没有请求日志与指标、没有优雅关闭。短期令牌现在强制校验设备 ID，但竞赛峰值场景下其余能力仍要补。
 
 ### 3.4 界面缺口
 
@@ -144,12 +147,10 @@ runtime/guard/         Python 沙箱：AST 扫描 + 断网入口
 
 按依赖与风险排序：
 
-1. **完成 Phase 0 剩余高成本验证**。tool calling、流式 usage、普通对话与 gzip 已通过；预算确认后再跑长上下文与并发探针，并补八轮 sticky session、生图限流和充值流程证据。
-2. **补齐 3.1 的配置与证书**。证书是外部依赖、周期最长，越早启动越好，可以先自签开发、证书到位再替换。
-3. **托管余额闭环**（3.2）。网关回传权威成本 → 客户端解析 → 状态栏显示 → 运行前准入。这条链打通后本地价目表在托管态就可以彻底停用。
-4. **网关生产化**（3.3）。限流与准入排队优先，因为竞赛峰值下这是唯一能保护上游账号的手段。返回 `429` 带 `Retry-After`，客户端据此做排队 UX。
-5. **更新界面**（3.4）。
-6. **带宽方案落地**（见下）。
+1. **补齐 3.1 的配置与证书**。证书是外部依赖、周期最长，越早启动越好，可以先自签开发、证书到位再替换。
+2. **网关生产化**（3.3）。限流与准入排队优先，因为竞赛峰值下这是唯一能保护上游账号的手段。返回 `429` 带 `Retry-After`，客户端据此做排队 UX。
+3. **更新界面**（3.4）。
+4. **带宽方案落地**（见下）。
 
 ### 竞赛峰值的真实瓶颈
 
@@ -180,7 +181,7 @@ runtime/guard/         Python 沙箱：AST 扫描 + 断网入口
 - **`rename` 的原子性依赖同卷**。跨卷会退化成 copy + delete，不再原子。staging 目录必须和 `work/` 在同一分区。
 - **`BUDGET_EXCEEDED` 必须归为配置类错误**，否则会触发重试，在超预算的情况下继续烧钱。
 - **占位符是定长的**。`playbook-ref.cjs` 里 `PLACEHOLDER_LENGTH` 由 `playbookPlaceholder` 自身推导，客户端与 `gateway/server.cjs` 共用同一个模块，改格式时两边会一起变，但部署时要确认网关侧用的是同一份文件。
-- **中转商可能拒绝 `stream_options`**。代码对缺失 usage 是容忍的（记为 0），但那样计费会失真，Phase 0 要验。
+- **不要把权威计费改回响应头**。sub2api 不返回成本头，SSE 发出后也不能补响应头；必须保留 `x-request-id` 后查 usage 的设计。
 
 ### 5.4 文档现状
 
@@ -190,4 +191,4 @@ runtime/guard/         Python 沙箱：AST 扫描 + 断网入口
 
 ## 6. 验收基线
 
-当前状态：`npm test` 84 例全过，`npm run qa:electron` 退出码 0，其中设置弹窗断言包含 `twoModeTabs`、`hostedPanelVisible`、`threeConnectionTabs`、`fitsViewport`。接手后第一件事是复现这两条基线，再开始改动。
+当前状态：`npm test` 97 例全过，`npm run qa:electron` 退出码 0，其中设置弹窗断言包含 `twoModeTabs`、`hostedPanelVisible`、`threeConnectionTabs`、`fitsViewport`。接手后第一件事是复现这两条基线，再开始改动。

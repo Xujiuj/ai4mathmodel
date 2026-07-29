@@ -9,6 +9,7 @@ const PATHS = {
   loginPath: '/api/v1/auth/login',
   profilePath: '/api/v1/user/profile',
   usagePath: '/api/v1/usage/dashboard/stats',
+  usageListPath: '/api/v1/usage',
   apiKeysPath: '/api/v1/keys',
 };
 
@@ -111,6 +112,53 @@ test('sub2api adapter selects only active keys from the current paginated envelo
   });
 });
 
+test('sub2api adapter sums actual costs by request id and returns the latest balance', async () => {
+  await withJsonServer({
+    [PATHS.profilePath]: {
+      code: 0,
+      message: 'success',
+      data: { email: 'user@example.com', balance: 8.25 },
+    },
+    [`${PATHS.usageListPath}?request_id=req-1&page=1&page_size=20`]: {
+      code: 0,
+      message: 'success',
+      data: { items: [{ request_id: 'req-1', actual_cost: '0.125' }] },
+    },
+    [`${PATHS.usageListPath}?request_id=req-2&page=1&page_size=20`]: {
+      code: 0,
+      message: 'success',
+      data: { items: [{ request_id: 'req-2', actual_cost: 0.375 }] },
+    },
+  }, async (base, requests) => {
+    const adapter = createSub2apiAdapter({ base, paths: PATHS });
+    assert.deepEqual(await adapter.billing('jwt-token', ['req-1', 'req-2', 'req-1']), {
+      actualCost: 0.5,
+      balance: 8.25,
+      currency: 'USD',
+      complete: true,
+      missingRequestIds: [],
+    });
+    assert.equal(requests.length, 3);
+    assert.equal(requests.every(({ authorization }) => authorization === 'Bearer jwt-token'), true);
+  });
+});
+
+test('sub2api billing reports request ids that are not visible yet', async () => {
+  await withJsonServer({
+    [PATHS.profilePath]: { code: 0, message: 'success', data: { balance: 5 } },
+    [`${PATHS.usageListPath}?request_id=req-late&page=1&page_size=20`]: {
+      code: 0,
+      message: 'success',
+      data: { items: [] },
+    },
+  }, async (base) => {
+    const adapter = createSub2apiAdapter({ base, paths: PATHS });
+    const result = await adapter.billing('jwt-token', ['req-late']);
+    assert.equal(result.complete, false);
+    assert.deepEqual(result.missingRequestIds, ['req-late']);
+  });
+});
+
 test('sub2api adapter rejects a successful HTTP response with the wrong envelope', async () => {
   await withJsonServer({
     [PATHS.loginPath]: { code: 0, message: 'success', data: { token: 'legacy-token' } },
@@ -129,4 +177,8 @@ test('sub2api adapter rejects incomplete endpoint configuration at startup', () 
 
 test('hosted reasoning catalog uses the current GPT-5.6-SOL route', () => {
   assert.equal(gatewayConfig.tiers[0].models.reasoning, 'gpt-5.6-sol');
+  assert.equal(gatewayConfig.tiers[0].models.writing, 'gpt-5.6-sol');
+  assert.equal(gatewayConfig.tiers[0].models.image, 'gpt-image-2');
+  assert.equal(gatewayConfig.sub2api.topUpPath, '/purchase');
+  assert.equal(gatewayConfig.sub2api.topUpEnabled, false);
 });

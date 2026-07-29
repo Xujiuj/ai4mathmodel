@@ -38,6 +38,16 @@ test('assertBudget throws when cost exceeds maxCostPerRun', () => {
   assert.throws(() => assertBudget(state), (error) => error.code === 'BUDGET_EXCEEDED');
 });
 
+test('assertBudget does not compare authoritative USD cost with a CNY limit', () => {
+  const state = createRunState();
+  state.policy.budget.enabled = true;
+  state.policy.budget.maxCostPerRun = 1;
+  state.spend.cost = 5;
+  state.spend.authoritative = true;
+  state.spend.currency = 'USD';
+  assert.doesNotThrow(() => assertBudget(state));
+});
+
 test('accumulateSpend updates totals and byStage', () => {
   const state = createRunState({ stages: ['analysis'] });
   state.currentStage = 'analysis';
@@ -53,6 +63,24 @@ test('accumulateSpend updates totals and byStage', () => {
   assert.equal(snapshot.tokens, 1500);
 });
 
+test('accumulateSpend prefers authoritative hosted cost and balance', () => {
+  const state = createRunState({ stages: ['analysis'] });
+  state.currentStage = 'analysis';
+  const snapshot = accumulateSpend(state, {
+    usage: { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0 },
+    provider: 'openai',
+    model: 'gpt-5.6-sol',
+    authoritativeCost: 0.42,
+    authoritativeBalance: 9.58,
+    authoritativeCurrency: 'USD',
+  });
+  assert.equal(state.spend.cost, 0.42);
+  assert.equal(snapshot.authoritative, true);
+  assert.equal(snapshot.balance, 9.58);
+  assert.equal(snapshot.currency, 'USD');
+  assert.equal(snapshot.pricingUnknown, false);
+});
+
 test('toPublicPipelineEvent maps usage.updated to usage-progress', () => {
   const event = toPublicPipelineEvent({
     type: 'usage.updated',
@@ -63,4 +91,25 @@ test('toPublicPipelineEvent maps usage.updated to usage-progress', () => {
   assert.equal(event.tokens, 1500);
   assert.equal(event.cost, 1.25);
   assert.match(event.message, /¥1\.25/);
+});
+
+test('toPublicPipelineEvent labels authoritative hosted cost and balance', () => {
+  const event = toPublicPipelineEvent({
+    type: 'usage.updated',
+    createdAt: new Date().toISOString(),
+    payload: {
+      stage: 'analysis',
+      tokens: 1500,
+      cost: 0.42,
+      pricingUnknown: false,
+      authoritative: true,
+      balance: 9.58,
+      currency: 'USD',
+    },
+  });
+  assert.equal(event.authoritative, true);
+  assert.equal(event.balance, 9.58);
+  assert.match(event.message, /USD 0\.42/);
+  assert.match(event.message, /余额 USD 9\.58/);
+  assert.doesNotMatch(event.message, /约/);
 });

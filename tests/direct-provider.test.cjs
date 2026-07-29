@@ -17,14 +17,14 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
-function streamResponse(events) {
+function streamResponse(events, requestId = '') {
   const encoder = new TextEncoder();
   const chunks = events.map((event) => encoder.encode(`data: ${typeof event === 'string' ? event : JSON.stringify(event)}\n\n`));
   let cursor = 0;
   return {
     ok: true,
     status: 200,
-    headers: { get: () => null },
+    headers: { get: (name) => name.toLowerCase() === 'x-request-id' ? requestId : null },
     body: {
       getReader: () => ({
         read: async () => (cursor < chunks.length ? { done: false, value: chunks[cursor++] } : { done: true }),
@@ -116,14 +116,14 @@ test('reassembles a streamed tool loop and reports streamed usage', async () => 
           { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call-1', function: { name: 'read_workspace', arguments: '{"path":' } }] } }] },
           { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: '_file', arguments: '"inputs/a.txt"}' } }] } }] },
           '[DONE]',
-        ]);
+        ], 'req-tool');
       }
       return streamResponse([
         { choices: [{ delta: { content: '阶段' } }] },
         { choices: [{ delta: { content: '完成。' } }] },
         { choices: [], usage: { prompt_tokens: 120, completion_tokens: 30 } },
         '[DONE]',
-      ]);
+      ], 'req-final');
     },
   });
 
@@ -132,6 +132,7 @@ test('reassembles a streamed tool loop and reports streamed usage', async () => 
   assert.equal(result.toolCallCount, 1);
   assert.equal(result.usage.inputTokens, 120);
   assert.equal(result.usage.outputTokens, 30);
+  assert.deepEqual(result.requestIds, ['req-tool', 'req-final']);
   assert.equal(requests[0].body.stream, true);
   assert.deepEqual(requests[0].body.stream_options, { include_usage: true });
   assert.equal(requests[0].options.headers.Accept, 'text/event-stream');
@@ -182,4 +183,19 @@ test('returns sanitized provider failures without exposing internal instructions
     fetchImpl: async () => jsonResponse({ error: { message: 'PRIVATE_INTERNAL_PROMPT_SENTINEL' } }, 500),
   }), (error) => error.code === 'MODEL_UNAVAILABLE'
     && !error.message.includes('PRIVATE_INTERNAL_PROMPT_SENTINEL'));
+});
+
+test('keeps the upstream request id when a streamed response is invalid', async () => {
+  await assert.rejects(runDirectAgent({
+    connection: { protocol: 'openai', baseUrl: 'https://gw.example/v1', model: 'hosted-model' },
+    apiKey: 'access-token',
+    systemPrompt: '@@PB1|analysis....|rw|@@',
+    prompt: '开始执行 analysis 阶段。',
+    tools: tool,
+    stream: true,
+    executeTool: async () => ({ ok: true }),
+    fetchImpl: async () => streamResponse(['[DONE]'], 'req-invalid'),
+  }), (error) => error.code === 'MODEL_RESPONSE_INVALID'
+    && error.requestId === 'req-invalid'
+    && error.requestIds?.[0] === 'req-invalid');
 });

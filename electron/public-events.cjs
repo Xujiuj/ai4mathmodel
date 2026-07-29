@@ -46,14 +46,24 @@ function toPublicPipelineEvent(event) {
       const tokens = Number(event?.payload?.tokens) || 0;
       const cost = Number(event?.payload?.cost) || 0;
       const pricingUnknown = Boolean(event?.payload?.pricingUnknown);
+      const authoritative = Boolean(event?.payload?.authoritative);
+      const balance = typeof event?.payload?.balance === 'number' ? event.payload.balance : null;
+      const currency = String(event?.payload?.currency || 'CNY').toUpperCase().slice(0, 3);
+      const amount = `${currency === 'CNY' ? '¥' : `${currency} `}${cost.toFixed(2)}`;
+      const balanceText = balance === null
+        ? ''
+        : ` · 余额 ${currency === 'CNY' ? '¥' : `${currency} `}${balance.toFixed(2)}`;
       const message = pricingUnknown
         ? `已消耗 ${tokens.toLocaleString()} tokens`
-        : `已消耗 ${tokens.toLocaleString()} tokens · 约 ¥${cost.toFixed(2)}`;
+        : `已消耗 ${tokens.toLocaleString()} tokens · ${authoritative ? '' : '约 '}${amount}${balanceText}`;
       return {
         ...publicEvent('usage-progress', 'running', stage, message, event.createdAt),
         tokens,
         cost,
         pricingUnknown,
+        authoritative,
+        balance,
+        currency,
       };
     }
     default:

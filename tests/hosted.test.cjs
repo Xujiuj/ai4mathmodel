@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -11,11 +12,13 @@ const { createHostedClient } = require('../electron/hosted/client.cjs');
 const { hostedEndpoints } = require('../electron/hosted/endpoints.cjs');
 const { openKey, sealKey, sign, verify } = require('../gateway/tokens.cjs');
 const { spliceHead } = require('../gateway/server.cjs');
+const { createGateway } = require('../gateway/server.cjs');
 
 const CATALOG = {
   baseUrl: 'https://gw.example.com/v1',
   tiers: [{ id: 'standard', label: '标准', models: { reasoning: 'r-model', writing: 'w-model', image: 'i-model' } }],
   defaultTiers: { reasoning: 'standard', writing: 'standard', image: 'standard' },
+  topUpEnabled: false,
 };
 
 function jsonResponse(payload, status = 200) {
@@ -83,6 +86,114 @@ test('gateway rejects a body without a valid placeholder', () => {
   assert.equal(spliceHead(body, () => 'x'), null);
 });
 
+test('gateway binds short tokens to devices and reconciles usage by request id', async () => {
+  const upstreamRequests = [];
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      upstreamRequests.push({ url: request.url, authorization: request.headers.authorization || '' });
+      let payload;
+      if (request.url === '/api/v1/auth/login') {
+        payload = { code: 0, data: { access_token: 'jwt-token', user: { email: 'user@example.com' } } };
+      } else if (request.url === '/api/v1/keys') {
+        payload = { code: 0, data: { items: [{ key: 'sk-active', status: 'active' }] } };
+      } else if (request.url === '/api/v1/user/profile') {
+        payload = { code: 0, data: { email: 'user@example.com', balance: 7.5 } };
+      } else if (request.url === '/api/v1/usage/dashboard/stats') {
+        payload = { code: 0, data: { total_actual_cost: 2.5 } };
+      } else if (request.url === '/api/v1/usage?request_id=req-live&page=1&page_size=20') {
+        payload = { code: 0, data: { items: [{ request_id: 'req-live', actual_cost: 0.25 }] } };
+      } else if (request.url === '/v1/chat/completions') {
+        response.writeHead(200, { 'Content-Type': 'application/json', 'X-Request-Id': 'req-live' });
+        response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }));
+        return;
+      } else {
+        response.writeHead(404, { 'Content-Type': 'application/json' });
+        response.end('{}');
+        return;
+      }
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify(payload));
+    });
+  });
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upstreamBase = `http://127.0.0.1:${upstream.address().port}`;
+  const gateway = createGateway({
+    upstream: upstreamBase,
+    portal: 'https://portal.example.com',
+    publicBaseUrl: 'https://gw.example.com',
+    tokenSecret: 'token-secret-long-enough-for-tests',
+    keySecret: 'key-secret-long-enough-for-tests',
+    accessTokenTtlSeconds: 900,
+    tiers: CATALOG.tiers,
+    defaultTiers: CATALOG.defaultTiers,
+    imageEnabled: true,
+    maxImagesPerStage: 1,
+    sub2api: {
+      loginPath: '/api/v1/auth/login',
+      profilePath: '/api/v1/user/profile',
+      usagePath: '/api/v1/usage/dashboard/stats',
+      usageListPath: '/api/v1/usage',
+      apiKeysPath: '/api/v1/keys',
+      topUpPath: '/purchase',
+      topUpEnabled: false,
+    },
+  }, { expandPlaybook: () => 'server playbook' });
+  await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${gateway.address().port}`;
+  try {
+    const login = await fetch(`${base}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'user@example.com', password: 'password' }),
+    }).then((response) => response.json());
+    const tokenResult = await fetch(`${base}/auth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${login.credential}` },
+      body: JSON.stringify({ deviceId: 'device-1' }),
+    }).then((response) => response.json());
+    const authHeaders = { Authorization: `Bearer ${tokenResult.accessToken}`, 'X-Device-Id': 'device-1' };
+
+    const wrongDevice = await fetch(`${base}/account`, {
+      headers: { ...authHeaders, 'X-Device-Id': 'device-2' },
+    });
+    assert.equal(wrongDevice.status, 401);
+
+    const account = await fetch(`${base}/account`, { headers: authHeaders }).then((response) => response.json());
+    assert.equal(account.balance, 7.5);
+
+    const modelResponse = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'system', content: playbookPlaceholder({ stage: 'analysis' }) }] }),
+    });
+    assert.equal(modelResponse.headers.get('x-request-id'), 'req-live');
+
+    const billing = await fetch(`${base}/billing`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestIds: ['req-live'] }),
+    }).then((response) => response.json());
+    assert.deepEqual(billing, {
+      actualCost: 0.25,
+      balance: 7.5,
+      currency: 'USD',
+      complete: true,
+      missingRequestIds: [],
+    });
+
+    const topUp = await fetch(`${base}/topup`, { headers: authHeaders });
+    assert.equal(topUp.status, 409);
+    assert.equal(upstreamRequests.some((request) => request.url === '/v1/chat/completions' && request.authorization === 'Bearer sk-active'), true);
+    assert.equal(upstreamRequests.filter((request) => request.url === '/api/v1/user/profile')
+      .every((request) => request.authorization === 'Bearer jwt-token'), true);
+  } finally {
+    await new Promise((resolve, reject) => gateway.close((error) => error ? reject(error) : resolve()));
+    await new Promise((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test('sealed upstream keys survive a signed token round-trip and reject tampering', () => {
   const sealed = sealKey('sk-upstream', 'key-secret');
   assert.equal(openKey(sealed, 'key-secret'), 'sk-upstream');
@@ -145,6 +256,7 @@ test('hosted client caches access tokens and maps upstream failures', async () =
       }
       if (url.endsWith('/catalog')) return jsonResponse(CATALOG);
       if (url.endsWith('/account')) return jsonResponse({ balance: 12.5, currency: 'cny', email: 'a@b.c' });
+      if (url.endsWith('/billing')) return jsonResponse({ actualCost: 0.75, balance: 11.75, currency: 'usd', complete: true });
       return jsonResponse({ error: 'x' }, 402);
     },
   });
@@ -161,7 +273,15 @@ test('hosted client caches access tokens and maps upstream failures', async () =
   assert.equal(account.balance, 12.5);
   assert.equal(account.currency, 'CNY');
 
-  await assert.rejects(client.topUpUrl(), (error) => error.code === 'HOSTED_BALANCE_EXHAUSTED');
+  assert.deepEqual(await client.billing(['req-1', 'req-1']), {
+    actualCost: 0.75,
+    balance: 11.75,
+    currency: 'USD',
+    complete: true,
+    missingRequestIds: [],
+  });
+
+  await assert.rejects(client.topUpUrl(), (error) => error.code === 'HOSTED_TOPUP_UNAVAILABLE');
 });
 
 test('hosted client refuses to run without configured endpoints', async () => {

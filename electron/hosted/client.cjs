@@ -12,6 +12,7 @@ function hostedError(code, status = 0) {
     HOSTED_AUTH_FAILED: '托管账户登录失败或凭据已失效。',
     HOSTED_BALANCE_EXHAUSTED: '账户余额不足，请先充值。',
     HOSTED_RATE_LIMITED: '当前排队人数较多，请稍后重试。',
+    HOSTED_TOPUP_UNAVAILABLE: '在线充值暂未开放。',
     HOSTED_UNAVAILABLE: '托管服务暂时不可用。',
     HOSTED_NETWORK_ERROR: '无法连接托管服务。',
     HOSTED_RESPONSE_INVALID: '托管服务返回了无法识别的响应。',
@@ -26,6 +27,7 @@ function statusError(status) {
   if (status === 401 || status === 403) return hostedError('HOSTED_AUTH_FAILED', status);
   if (status === 402) return hostedError('HOSTED_BALANCE_EXHAUSTED', status);
   if (status === 429) return hostedError('HOSTED_RATE_LIMITED', status);
+  if (status === 409) return hostedError('HOSTED_TOPUP_UNAVAILABLE', status);
   return hostedError('HOSTED_UNAVAILABLE', status);
 }
 
@@ -54,6 +56,7 @@ function cleanCatalog(payload = {}, gateway = '') {
       image: String(defaults.image || '').slice(0, 40),
     },
     imageEnabled: payload.imageEnabled !== false,
+    topUpEnabled: payload.topUpEnabled === true,
     maxImagesPerStage: Math.min(Math.max(Number(payload.maxImagesPerStage) || 1, 0), 4),
     playbookVersion: String(payload.playbookVersion || '').slice(0, 40),
   };
@@ -80,7 +83,7 @@ function createHostedClient({
   let catalogCache = null;
   let tokenCache = null;
 
-  async function request(path, { method = 'GET', body, token } = {}) {
+  async function request(path, { method = 'GET', body, token, deviceId } = {}) {
     if (!hostedConfigured(endpoints)) throw hostedError('HOSTED_NOT_CONFIGURED');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -92,6 +95,7 @@ function createHostedClient({
           Accept: 'application/json',
           ...(body ? { 'Content-Type': 'application/json' } : {}),
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(deviceId ? { 'X-Device-Id': String(deviceId).slice(0, 64) } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
         redirect: 'error',
@@ -165,21 +169,55 @@ function createHostedClient({
 
     async catalog({ force = false } = {}) {
       if (!force && catalogCache && catalogCache.fetchedAt + CATALOG_TTL_MS > now()) return catalogCache.value;
-      const payload = await request('/catalog', { token: await this.accessToken() });
+      const payload = await request('/catalog', {
+        token: await this.accessToken(),
+        deviceId: await session.deviceId(),
+      });
       const value = cleanCatalog(payload, endpoints.gateway);
       catalogCache = { value, fetchedAt: now() };
       return value;
     },
 
     async account() {
-      return cleanAccount(await request('/account', { token: await this.accessToken() }));
+      return cleanAccount(await request('/account', {
+        token: await this.accessToken(),
+        deviceId: await session.deviceId(),
+      }));
     },
 
     async topUpUrl() {
-      const payload = await request('/topup', { token: await this.accessToken() });
+      const catalog = await this.catalog();
+      if (!catalog.topUpEnabled) throw hostedError('HOSTED_TOPUP_UNAVAILABLE', 409);
+      const payload = await request('/topup', {
+        token: await this.accessToken(),
+        deviceId: await session.deviceId(),
+      });
       const url = String(payload?.url || '');
       if (!url.startsWith(endpoints.portal)) throw hostedError('HOSTED_RESPONSE_INVALID');
       return url;
+    },
+
+    async billing(requestIds = []) {
+      const ids = [...new Set((Array.isArray(requestIds) ? requestIds : [])
+        .map((value) => String(value || '').trim().slice(0, 160))
+        .filter(Boolean))].slice(0, 72);
+      if (!ids.length) throw hostedError('HOSTED_RESPONSE_INVALID');
+      const payload = await request('/billing', {
+        method: 'POST',
+        token: await this.accessToken(),
+        deviceId: await session.deviceId(),
+        body: { requestIds: ids },
+      });
+      const missingRequestIds = Array.isArray(payload?.missingRequestIds)
+        ? payload.missingRequestIds.map((value) => String(value || '').slice(0, 160)).filter(Boolean)
+        : [];
+      return {
+        actualCost: Number(payload?.actualCost) || 0,
+        balance: Number(payload?.balance) || 0,
+        currency: String(payload?.currency || 'USD').toUpperCase().slice(0, 3),
+        complete: missingRequestIds.length === 0 && payload?.complete !== false,
+        missingRequestIds,
+      };
     },
   };
 }

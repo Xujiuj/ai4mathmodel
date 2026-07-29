@@ -99,9 +99,13 @@ function forwardStream({ req, res, config, apiKey, expanded }) {
       },
       timeout: Number(config.requestTimeoutMs) || 600_000,
     }, (response) => {
+      const requestId = String(response.headers['x-request-id'] || '')
+        .replace(/[^\x20-\x7e]/g, '')
+        .slice(0, 160);
       res.writeHead(response.statusCode || 502, {
         'Content-Type': response.headers['content-type'] || 'application/json',
         ...(response.headers['content-encoding'] ? { 'Content-Encoding': response.headers['content-encoding'] } : {}),
+        ...(requestId ? { 'X-Request-Id': requestId } : {}),
         'Cache-Control': 'no-cache',
         'X-Accel-Buffering': 'no',
       });
@@ -169,7 +173,12 @@ function createGateway(config = loadConfig(), playbooks = loadPlaybooks()) {
     const key = await sub2api.primaryApiKey(credential);
     const exp = Math.floor(Date.now() / 1000) + ttl;
     return {
-      accessToken: sign({ exp, dev: String(deviceId || '').slice(0, 64), k: sealKey(key, config.keySecret) }, config.tokenSecret),
+      accessToken: sign({
+        exp,
+        dev: String(deviceId || '').slice(0, 64),
+        k: sealKey(key, config.keySecret),
+        c: sealKey(credential, config.keySecret),
+      }, config.tokenSecret),
       expiresAt: exp * 1000,
     };
   }
@@ -177,8 +186,16 @@ function createGateway(config = loadConfig(), playbooks = loadPlaybooks()) {
   function authorize(req) {
     const payload = verify(bearer(req), config.tokenSecret);
     const deviceId = String(req.headers['x-device-id'] || '').slice(0, 64);
-    if (payload.dev && deviceId && payload.dev !== deviceId) throw new Error('TOKEN_DEVICE_MISMATCH');
-    return openKey(payload.k, config.keySecret);
+    if (payload.dev && payload.dev !== deviceId) throw new Error('TOKEN_DEVICE_MISMATCH');
+    if (!payload.k || !payload.c) throw new Error('TOKEN_PAYLOAD_INVALID');
+    try {
+      return {
+        apiKey: openKey(payload.k, config.keySecret),
+        credential: openKey(payload.c, config.keySecret),
+      };
+    } catch {
+      throw new Error('TOKEN_PAYLOAD_INVALID');
+    }
   }
 
   return http.createServer(async (req, res) => {
@@ -204,20 +221,36 @@ function createGateway(config = loadConfig(), playbooks = loadPlaybooks()) {
           tiers: config.tiers,
           defaultTiers: config.defaultTiers,
           imageEnabled: Boolean(config.imageEnabled),
+          topUpEnabled: config.sub2api.topUpEnabled === true,
           maxImagesPerStage: Number(config.maxImagesPerStage) || 0,
         });
       }
 
       if (req.method === 'GET' && route === '/account') {
-        return sendJson(res, 200, await sub2api.profile(bearer(req)));
+        const { credential } = authorize(req);
+        return sendJson(res, 200, await sub2api.profile(credential));
       }
 
       if (req.method === 'GET' && route === '/topup') {
+        authorize(req);
+        if (config.sub2api.topUpEnabled !== true) {
+          return sendJson(res, 409, { error: { message: '在线充值暂未开放。' } });
+        }
         return sendJson(res, 200, { url: `${config.portal}${config.sub2api.topUpPath}` });
       }
 
+      if (req.method === 'POST' && route === '/billing') {
+        const body = await readJsonBody(req);
+        const { credential } = authorize(req);
+        const requestIds = Array.isArray(body.requestIds) ? body.requestIds : [];
+        if (!requestIds.length || requestIds.length > 72) {
+          return sendJson(res, 400, { error: { message: 'requestIds 参数无效。' } });
+        }
+        return sendJson(res, 200, await sub2api.billing(credential, requestIds));
+      }
+
       if (req.method === 'POST' && FORWARD_PATHS.has(route)) {
-        const apiKey = authorize(req);
+        const { apiKey } = authorize(req);
         return forwardStream({
           req,
           res,
