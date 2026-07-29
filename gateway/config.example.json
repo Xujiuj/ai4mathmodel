@@ -8,6 +8,24 @@
   "accessTokenTtlSeconds": 900,
   "requestTimeoutMs": 600000,
   "maxBodyBytes": 8388608,
+  "operations": {
+    "rateLimit": {
+      "windowMs": 60000,
+      "maxRequests": 30,
+      "maxTrackedDevices": 10000
+    },
+    "admission": {
+      "maxConcurrent": 4,
+      "maxQueued": 24,
+      "queueTimeoutMs": 300000
+    },
+    "shutdownGraceMs": 30000,
+    "metrics": {
+      "enabled": false,
+      "path": "/metrics",
+      "token": ""
+    }
+  },
   "imageEnabled": true,
   "maxImagesPerStage": 1,
   "tiers": [
