@@ -100,7 +100,10 @@ runtime/guard/         Python 沙箱：AST 扫描 + 断网入口
 | 生图优先取 URL、被拒回退 base64、每阶段张数上限 | `image-provider.cjs` |
 | 账户 IPC 与充值入口 | `preload.cjs`、`src/components/AccountPanel.jsx` |
 | 注入网关 | `gateway/` |
+| sub2api 当前用户态契约 | `gateway/sub2api.cjs`：`data.access_token`、`/api/v1/keys`、`/api/v1/usage/dashboard/stats` |
 | 托管链路测试 10 例 | `tests/hosted.test.cjs` |
+
+2026-07-29 已在 Hermes 的 `/opt/sub2api` 完成 Docker Compose 加固：Sub2API 仅监听远端 `127.0.0.1:18080`，PostgreSQL/Redis 不暴露公网，镜像按摘要固定，Redis 强制认证并启用日志轮转。现有数据与生图路由已保留。active Key 已实测可调用 `gpt-5.6-sol`：普通对话、tool calling、流式 usage 与 gzip 请求体均通过；证据见 `docs/hosted-model-matrix.md`。
 
 **提示词保密的实现方式**：托管态客户端发出的 system 内容只有一个定长占位符 `@@PB1|analysis....|rw|@@`，用户消息只有一句「开始执行 X 阶段」。真实 playbook 全部在服务端 `gateway/playbooks.cjs`。网关只在请求体头部做一次定长字节替换，不解析整个 body，CPU 开销与 payload 大小无关。上游 API Key 用 AES-GCM 密封在 15 分钟短期令牌里，客户端持有但解不开，无法绕过应用直接使用号池。
 
@@ -112,8 +115,7 @@ runtime/guard/         Python 沙箱：AST 扫描 + 断网入口
 
 | 项 | 说明 |
 |---|---|
-| **Phase 0 上游验证** | 中转商是否支持 tool calling、`stream_options.include_usage`、长上下文、`usage` 回传、gzip 请求体。这些假设目前全部未经真机验证 |
-| **sub2api 用户态 API 对齐** | `gateway/sub2api.cjs` 现在是宽松取值加注释，登录 / 用户资料 / API Key 列表的真实路径与字段确认后要收敛成精确映射 |
+| **Phase 0 上游验证（部分完成）** | `gpt-5.6-sol` 的 tool calling、`stream_options.include_usage`、普通对话与 gzip 请求体已通过真机验证；12万/20万长上下文、并发 2/4、八轮 sticky session、生图限流仍未验证。sub2api 不返回 `X-Cost` / `X-Balance` |
 | **三个配置文件** | `gateway/config.json`、`gateway/playbooks.cjs`、`electron/hosted/endpoints.json`，都有对应的 `.example` 模板且已 gitignore。打包后读不到环境变量，托管地址必须构建期落盘 |
 | **代码签名证书** | `package.json` 的 `win` 段只有 `signingHashAlgorithms`，没有证书配置。证书采购是关键路径，1–3 周；杀软误报报备另需 1–4 周 |
 | **更新服务器** | `publish.url` 还是占位符 `https://dl.example.com/mmw/${channel}/` |
@@ -142,7 +144,7 @@ runtime/guard/         Python 沙箱：AST 扫描 + 断网入口
 
 按依赖与风险排序：
 
-1. **Phase 0 上游验证**。所有托管代码都建立在对中转商能力的假设上，这一步不做，后面的工作量估算都不可信。特别是 tool calling 与流式 usage，如果中转商不支持，`direct-provider.cjs` 的托管分支要改。
+1. **完成 Phase 0 剩余高成本验证**。tool calling、流式 usage、普通对话与 gzip 已通过；预算确认后再跑长上下文与并发探针，并补八轮 sticky session、生图限流和充值流程证据。
 2. **补齐 3.1 的配置与证书**。证书是外部依赖、周期最长，越早启动越好，可以先自签开发、证书到位再替换。
 3. **托管余额闭环**（3.2）。网关回传权威成本 → 客户端解析 → 状态栏显示 → 运行前准入。这条链打通后本地价目表在托管态就可以彻底停用。
 4. **网关生产化**（3.3）。限流与准入排队优先，因为竞赛峰值下这是唯一能保护上游账号的手段。返回 `429` 带 `Retry-After`，客户端据此做排队 UX。

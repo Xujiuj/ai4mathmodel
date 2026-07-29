@@ -46,17 +46,24 @@ function requestJson(base, path, { method = 'GET', body, token, timeoutMs = 15_0
   });
 }
 
-function pick(source, names) {
-  for (const name of names) {
-    const value = name.split('.').reduce((acc, key) => (acc == null ? acc : acc[key]), source);
-    if (value !== undefined && value !== null && value !== '') return value;
+function envelopeData(body, errorCode) {
+  if (!body || body.code !== 0 || !body.data || typeof body.data !== 'object') {
+    throw Object.assign(new Error(errorCode), { status: 502 });
   }
-  return undefined;
+  return body.data;
 }
 
-// sub2api 的用户态响应字段在不同版本间存在差异，此处做宽松取值。
-// Phase 0 #8 确认实际路径与字段后收敛为精确映射。
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
 function createSub2apiAdapter({ base, paths }) {
+  if (!base) throw new Error('SUB2API_CONFIG_INVALID:base');
+  for (const field of ['loginPath', 'profilePath', 'usagePath', 'apiKeysPath']) {
+    if (!paths?.[field]) throw new Error(`SUB2API_CONFIG_INVALID:${field}`);
+  }
+
   return {
     async login(email, password) {
       const { status, body } = await requestJson(base, paths.loginPath, {
@@ -64,32 +71,41 @@ function createSub2apiAdapter({ base, paths }) {
         body: { email, password },
       });
       if (status !== 200) throw Object.assign(new Error('SUB2API_LOGIN_FAILED'), { status });
-      const token = pick(body, ['token', 'data.token', 'access_token', 'data.access_token']);
+      const data = envelopeData(body, 'SUB2API_LOGIN_SHAPE');
+      const token = data.access_token;
       if (!token) throw Object.assign(new Error('SUB2API_LOGIN_SHAPE'), { status: 502 });
-      return { token: String(token), email: String(pick(body, ['data.user.email', 'user.email']) || email) };
+      return { token: String(token), email: String(data.user?.email || email) };
     },
 
     async profile(token) {
-      const { status, body } = await requestJson(base, paths.profilePath, { token });
-      if (status !== 200) throw Object.assign(new Error('SUB2API_PROFILE_FAILED'), { status });
-      const source = body?.data || body || {};
+      const [profileResponse, usageResponse] = await Promise.all([
+        requestJson(base, paths.profilePath, { token }),
+        requestJson(base, paths.usagePath, { token }),
+      ]);
+      if (profileResponse.status !== 200) {
+        throw Object.assign(new Error('SUB2API_PROFILE_FAILED'), { status: profileResponse.status });
+      }
+      if (usageResponse.status !== 200) {
+        throw Object.assign(new Error('SUB2API_USAGE_FAILED'), { status: usageResponse.status });
+      }
+      const profile = envelopeData(profileResponse.body, 'SUB2API_PROFILE_SHAPE');
+      const usage = envelopeData(usageResponse.body, 'SUB2API_USAGE_SHAPE');
       return {
-        email: String(pick(source, ['email', 'user.email']) || ''),
-        balance: Number(pick(source, ['balance', 'user_balance', 'user.balance']) || 0),
-        totalSpend: Number(pick(source, ['total_spend', 'used_quota', 'user.total_spend']) || 0),
-        currency: String(pick(source, ['currency']) || 'CNY'),
+        email: String(profile.email || ''),
+        balance: finiteNumber(profile.balance),
+        totalSpend: finiteNumber(usage.total_actual_cost),
+        currency: 'USD',
       };
     },
 
     async primaryApiKey(token) {
       const { status, body } = await requestJson(base, paths.apiKeysPath, { token });
       if (status !== 200) throw Object.assign(new Error('SUB2API_KEYS_FAILED'), { status });
-      const list = pick(body, ['data.items', 'data', 'items', 'keys']);
-      const entries = Array.isArray(list) ? list : [];
-      const active = entries.find((item) => item && item.status !== 'disabled' && pick(item, ['key', 'api_key', 'secret']));
-      const key = active ? pick(active, ['key', 'api_key', 'secret']) : undefined;
-      if (!key) throw Object.assign(new Error('SUB2API_NO_ACTIVE_KEY'), { status: 502 });
-      return String(key);
+      const data = envelopeData(body, 'SUB2API_KEYS_SHAPE');
+      const entries = Array.isArray(data.items) ? data.items : [];
+      const active = entries.find((item) => item?.status === 'active' && item.key);
+      if (!active) throw Object.assign(new Error('SUB2API_NO_ACTIVE_KEY'), { status: 502 });
+      return String(active.key);
     },
   };
 }
