@@ -110,6 +110,7 @@ export function AccountPanel({ tiers, activeTiers, onTierChange }) {
               <span>{label}档位</span>
               <select
                 value={activeTiers?.[key] || state.defaultTiers?.[key] || ''}
+                disabled={!onTierChange}
                 onChange={(event) => onTierChange?.(key, event.target.value)}
               >
                 {options.map((tier) => <option key={tier.id} value={tier.id}>{tier.label || tier.id}</option>)}

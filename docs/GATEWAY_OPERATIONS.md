@@ -2,6 +2,8 @@
 
 The gateway protects upstream model capacity with a per-device sliding-window limit and a bounded admission queue. Defaults are 30 model requests per device per 60 seconds, four active upstream streams, 24 waiting requests, and a five-minute queue timeout. Rejections return `429` and `Retry-After`.
 
+Hosted login is backed by the user's Sub2API account. The gateway does not create a local user database, persist passwords, or expose the user's Sub2API credential to the renderer. Login attempts are separately limited by both source address and an HMAC-derived account identity: eight attempts per 15 minutes by default. Set `operations.loginRateLimit.trustProxy` only when a trusted reverse proxy overwrites `X-Forwarded-For`.
+
 ## Metrics
 
 Metrics are disabled by default. Set `operations.metrics.enabled` to `true` and configure a separate non-empty `operations.metrics.token`; never reuse a hosted access token. Scrape `operations.metrics.path` (default `/metrics`) with:

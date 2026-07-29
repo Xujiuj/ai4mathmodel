@@ -10,6 +10,7 @@ function boundedNumber(value, fallback, minimum, maximum) {
 
 function normalizeOperations(raw = {}) {
   const rateLimit = raw.rateLimit || {};
+  const loginRateLimit = raw.loginRateLimit || {};
   const admission = raw.admission || {};
   const metrics = raw.metrics || {};
   const metricsPath = String(metrics.path || '/metrics').trim();
@@ -18,6 +19,12 @@ function normalizeOperations(raw = {}) {
       windowMs: boundedNumber(rateLimit.windowMs, 60_000, 1_000, 3_600_000),
       maxRequests: boundedNumber(rateLimit.maxRequests, 30, 1, 10_000),
       maxTrackedDevices: boundedNumber(rateLimit.maxTrackedDevices, 10_000, 100, 1_000_000),
+    },
+    loginRateLimit: {
+      windowMs: boundedNumber(loginRateLimit.windowMs, 900_000, 60_000, 3_600_000),
+      maxAttempts: boundedNumber(loginRateLimit.maxAttempts, 8, 1, 100),
+      maxTrackedIdentities: boundedNumber(loginRateLimit.maxTrackedIdentities, 10_000, 100, 1_000_000),
+      trustProxy: loginRateLimit.trustProxy === true,
     },
     admission: {
       maxConcurrent: boundedNumber(admission.maxConcurrent, 4, 1, 128),

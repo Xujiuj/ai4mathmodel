@@ -137,6 +137,8 @@ runtime/guard/         Python 沙箱：AST 扫描 + 断网入口
 
 `gateway/operations.cjs` 提供按设备的滑动窗口限流（默认 30 次/60 秒）、有界准入队列（默认 4 个活跃上游流、24 个等待、5 分钟超时）、固定标签 Prometheus 指标和 JSON 请求日志。模型请求的拒绝会返回 `429` 和 `Retry-After`；指标默认关闭，启用时必须配置独立 token。`SIGTERM`/`SIGINT` 会停止新工作、取消排队、排空活跃流 30 秒后才强制关闭。运维说明见 `docs/GATEWAY_OPERATIONS.md`。支付仍保持关闭，不能把这项工作理解为支付上线。
 
+托管账户入口位于侧栏“账户与充值”：用户登录的是自己的 Sub2API 账户，凭据仅由 Electron 主进程的 `safeStorage` 加密保存；短期访问令牌不经 IPC 进入渲染层。每次托管任务启动前都会检查登录态和该用户余额，费用与充值均由该用户的 Sub2API 账户隔离。网关对登录接口额外执行来源与账户双维度限流。支付商尚未配置，因此充值按钮仍禁用。
+
 ### 3.4 界面缺口
 
 更新相关的 IPC 与 preload 接口（`checkForUpdates` / `downloadUpdate` / `installUpdate` / `listComponentUpdates` / `onUpdaterEvent`）都已就绪，但**渲染层没有任何界面消费它们**，用户看不到也点不了更新。这违反了 `AGENTS.md` 里「每个可见命令要么能用要么显式禁用」的约定，属于需要补齐的一块。

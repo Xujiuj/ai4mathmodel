@@ -38,6 +38,7 @@ test('operations normalize bounded defaults and protect the sliding window', () 
   });
   assert.equal(operations.rateLimit.windowMs, 1_000);
   assert.equal(operations.rateLimit.maxRequests, 1);
+  assert.equal(operations.loginRateLimit.maxAttempts, 8);
   assert.equal(operations.admission.maxConcurrent, 128);
   assert.equal(operations.metrics.path, '/metrics');
 
@@ -86,6 +87,61 @@ test('gateway metrics use bounded labels and omit request identity', () => {
   assert.match(output, /gateway_admission_queued 2/);
   assert.equal(output.includes('device-test'), false);
   assert.equal(output.includes('request-id'), false);
+});
+
+test('gateway limits repeated login attempts before they reach Sub2API', async () => {
+  let loginAttempts = 0;
+  const upstream = http.createServer((request, response) => {
+    if (request.url === '/api/v1/auth/login') {
+      loginAttempts += 1;
+      response.writeHead(401, { 'Content-Type': 'application/json' });
+      response.end('{"code":401,"message":"invalid"}');
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  const upstreamBase = await listen(upstream);
+  const gateway = createGateway({
+    upstream: upstreamBase,
+    portal: 'https://portal.example.com',
+    publicBaseUrl: 'https://gw.example.com',
+    tokenSecret: 'token-secret-long-enough-for-login-limit-tests',
+    keySecret: 'key-secret-long-enough-for-login-limit-tests',
+    tiers: [],
+    defaultTiers: {},
+    sub2api: {
+      loginPath: '/api/v1/auth/login',
+      profilePath: '/api/v1/user/profile',
+      usagePath: '/api/v1/usage/dashboard/stats',
+      usageListPath: '/api/v1/usage',
+      apiKeysPath: '/api/v1/keys',
+    },
+    operations: { loginRateLimit: { maxAttempts: 1 } },
+    logger: () => {},
+  }, { expandPlaybook: () => 'server playbook' });
+  const base = await listen(gateway);
+  const body = JSON.stringify({ email: 'user@example.com', password: 'wrong-password' });
+
+  try {
+    const first = await fetch(`${base}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    assert.equal(first.status, 401);
+    const second = await fetch(`${base}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    assert.equal(second.status, 429);
+    assert.equal(second.headers.get('retry-after'), '900');
+    assert.equal(loginAttempts, 1);
+  } finally {
+    await new Promise((resolve) => gateway.close(resolve));
+    await new Promise((resolve) => upstream.close(resolve));
+  }
 });
 
 test('gateway queues model traffic, protects metrics, and drains on shutdown', async () => {

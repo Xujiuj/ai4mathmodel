@@ -26,6 +26,7 @@ import {
   Sigma,
   Trash2,
   Upload,
+  UserRound,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
@@ -50,7 +51,7 @@ export function StatusPill({ status, children }) {
   return <span className={`status-pill status-${status}`}>{children}</span>;
 }
 
-export function AppSidebar({ projects, activeProject, stages, activeStage, onSelectProject, onSelectStage, onNew, onImport, onSettings, onRemove, onOpenRuns, running, activeRuns = [], desktopAvailable = true }) {
+export function AppSidebar({ projects, activeProject, stages, activeStage, onSelectProject, onSelectStage, onNew, onImport, onSettings, onAccount, onRemove, onOpenRuns, running, activeRuns = [], desktopAvailable = true }) {
   const [query, setQuery] = useState('');
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [collapsedProjects, setCollapsedProjects] = useState({});
@@ -132,6 +133,7 @@ export function AppSidebar({ projects, activeProject, stages, activeStage, onSel
       </section>
 
       <footer className="sidebar-footer">
+        <button onClick={onAccount} disabled={!onAccount}><UserRound size={16} /><span>账户与充值</span></button>
         <button onClick={onSettings} disabled={!onSettings}><Settings size={16} /><span>设置与模型</span></button>
       </footer>
     </aside>

@@ -50,6 +50,16 @@ export function CreateProjectModal({ onClose, onCreate }) {
   );
 }
 
+export function HostedAccountModal({ onClose }) {
+  return (
+    <Modal title="托管账户" onClose={onClose} width={620}>
+      <div className="settings-content">
+        <AccountPanel />
+      </div>
+    </Modal>
+  );
+}
+
 function StatusLine({ value }) {
   return <span className="settings-status-line">{value}</span>;
 }

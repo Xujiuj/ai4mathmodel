@@ -20,6 +20,12 @@ const { createSub2apiAdapter } = require('./sub2api.cjs');
 const HEAD_LIMIT = 8 * 1024;
 const FORWARD_PATHS = new Set(['/v1/chat/completions', '/v1/images/generations']);
 
+function cleanLoginEmail(value) {
+  const email = String(value || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 160) throw new Error('AUTH_LOGIN_INVALID');
+  return email;
+}
+
 function loadConfig() {
   const file = process.env.GATEWAY_CONFIG || path.join(__dirname, 'config.json');
   const config = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -213,6 +219,13 @@ function createGateway(config = loadConfig(), playbooks = loadPlaybooks()) {
   const ttl = Number(config.accessTokenTtlSeconds) || 900;
   const operations = normalizeOperations(config.operations);
   const limiter = createRateLimiter(operations.rateLimit);
+  const loginLimiterOptions = {
+    windowMs: operations.loginRateLimit.windowMs,
+    maxRequests: operations.loginRateLimit.maxAttempts,
+    maxTrackedDevices: operations.loginRateLimit.maxTrackedIdentities,
+  };
+  const loginSourceLimiter = createRateLimiter(loginLimiterOptions);
+  const loginAccountLimiter = createRateLimiter(loginLimiterOptions);
   const admission = createAdmissionQueue(operations.admission);
   const metrics = createGatewayMetrics();
   const sockets = new Set();
@@ -247,6 +260,14 @@ function createGateway(config = loadConfig(), playbooks = loadPlaybooks()) {
   function reject(res, status, retryAfterSeconds, message) {
     res.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryAfterSeconds || 1))));
     return sendJson(res, status, { error: { message } });
+  }
+
+  function loginSource(req) {
+    if (operations.loginRateLimit.trustProxy) {
+      const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+      if (forwarded) return forwarded.slice(0, 128);
+    }
+    return String(req.socket?.remoteAddress || 'unknown').slice(0, 128);
   }
 
   async function issueAccessToken(credential, deviceId) {
@@ -327,7 +348,16 @@ function createGateway(config = loadConfig(), playbooks = loadPlaybooks()) {
 
       if (req.method === 'POST' && route === '/auth/login') {
         const body = await readJsonBody(req);
-        const session = await sub2api.login(String(body.email || ''), String(body.password || ''));
+        const email = cleanLoginEmail(body.email);
+        const password = String(body.password || '');
+        if (!password || password.length > 200) throw new Error('AUTH_LOGIN_INVALID');
+        const sourceRate = loginSourceLimiter.check(loginSource(req));
+        const accountRate = loginAccountLimiter.check(anonymizeIdentity(email, config.tokenSecret));
+        if (!sourceRate.allowed || !accountRate.allowed) {
+          metrics.reject('login_rate_limit');
+          return reject(res, 429, Math.max(sourceRate.retryAfterSeconds, accountRate.retryAfterSeconds), '登录尝试过于频繁。');
+        }
+        const session = await sub2api.login(email, password);
         return sendJson(res, 200, { credential: session.token, email: session.email });
       }
 
@@ -417,6 +447,7 @@ function createGateway(config = loadConfig(), playbooks = loadPlaybooks()) {
       if (res.writableEnded || res.destroyed) return undefined;
       const message = String(error?.message || '');
       if (message.startsWith('TOKEN_')) return sendJson(res, 401, { error: { message: '访问令牌无效或已过期。' } });
+      if (message === 'AUTH_LOGIN_INVALID') return sendJson(res, 400, { error: { message: '账户或密码格式无效。' } });
       if (message === 'SUB2API_LOGIN_FAILED') return sendJson(res, 401, { error: { message: '账户或密码不正确。' } });
       if (message === 'BODY_TOO_LARGE') return sendJson(res, 413, { error: { message: '请求体过大。' } });
       if (message === 'BODY_INVALID') return sendJson(res, 400, { error: { message: '请求格式无效。' } });

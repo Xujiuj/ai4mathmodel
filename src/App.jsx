@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { desktopApi, isDesktopRuntime } from './api.js';
-import { ConfirmModal, ConnectionSettingsModal, CreateProjectModal } from './components/Modals.jsx';
+import { ConfirmModal, ConnectionSettingsModal, CreateProjectModal, HostedAccountModal } from './components/Modals.jsx';
 import { PaperCommandBar, PaperWorkspace } from './components/PaperWorkspace.jsx';
 import { RunDrawer } from './components/RunDrawer.jsx';
 import { AppSidebar, EmptyProject, OutlinePanel, ProjectSummary, UtilitySidebar } from './components/Shell.jsx';
@@ -350,7 +350,27 @@ export function App() {
       notify('请先同时添加赛题文件和论文模板。', 'error');
       return;
     }
-    const modelsReady = ['reasoning', 'writing'].every((key) => settings.connections?.[key]?.baseUrl && settings.connections?.[key]?.model);
+    if (settings.mode === 'hosted' && isDesktopRuntime) {
+      try {
+        const account = await desktopApi.getAccount();
+        if (!account.configured) {
+          notify('当前版本未配置托管服务。', 'error');
+          setModal('account');
+          return;
+        }
+        if (!account.signedIn) {
+          notify('请先登录托管账户。', 'error');
+          setModal('account');
+          return;
+        }
+      } catch (error) {
+        notify(error.message || '无法确认托管账户状态。', 'error');
+        setModal('account');
+        return;
+      }
+    }
+    const modelsReady = settings.mode === 'hosted'
+      || ['reasoning', 'writing'].every((key) => settings.connections?.[key]?.baseUrl && settings.connections?.[key]?.model);
     if (!modelsReady) {
       notify('请先完成推理与代码模型、文本模型配置。', 'error');
       setModal('settings');
@@ -667,6 +687,7 @@ export function App() {
         onNew={() => setModal('create')}
         onImport={addProject}
         onSettings={isDesktopRuntime ? () => setModal('settings') : undefined}
+        onAccount={isDesktopRuntime ? () => setModal('account') : undefined}
         onRemove={requestRemoveProject}
         onOpenRuns={openRunHistory}
         running={running}
@@ -745,6 +766,7 @@ export function App() {
       </div>
 
       {modal === 'create' ? <CreateProjectModal onClose={() => setModal(null)} onCreate={createProject} /> : null}
+      {modal === 'account' ? <HostedAccountModal onClose={() => setModal(null)} /> : null}
       {modal === 'settings' ? (
         <ConnectionSettingsModal
           onClose={() => setModal(null)}
