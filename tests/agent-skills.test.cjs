@@ -13,6 +13,7 @@ const {
   MAX_RULES_PER_SKILL,
   MAX_RULES_PER_STAGE,
   MAX_STAGE_CHARS,
+  MAX_MODULE_CHARS,
   buildBundle,
   compileAgentSkills,
   compileRules,
@@ -59,6 +60,14 @@ test('runtime rejects a tampered bundle', () => {
   assert.throws(() => verifyBundle(tampered), (error) => error.code === 'AGENT_SKILL_BUNDLE_TAMPERED');
 });
 
+test('runtime rejects tampered handbook content even when stage rules are unchanged', () => {
+  const tampered = {
+    ...bundle,
+    modules: bundle.modules.map((module, index) => index === 0 ? { ...module, content: `${module.content}\ntampered` } : module),
+  };
+  assert.throws(() => verifyBundle(tampered), (error) => error.code === 'AGENT_SKILL_BUNDLE_TAMPERED');
+});
+
 test('build and runtime reject self-consistent obsolete or incomplete bundles', () => {
   const obsolete = withIntegrity({ ...bundle, bundleVersion: '1' });
   const incompleteStage = withIntegrity({
@@ -99,21 +108,44 @@ test('stage allowlists isolate compiled skills and contain no private source mar
   assert.deepEqual(bundle.stages.review.skillIds.includes('mmc-submission-audit'), true);
   assert.equal(skillGuidanceForStage('unknown'), '');
   const serialized = JSON.stringify(bundle);
-  assert.doesNotMatch(serialized, /SKILL\.md|AGENTS\.md|[A-Za-z]:[\\/]|(?:\/Users\/|\/home\/)/i);
-  assert.doesNotMatch(serialized, /gpt-image|prompt|secret|api key/i);
+  assert.doesNotMatch(serialized, /SKILL\.md|AGENTS\.md|[A-Za-z]:\\\\(?:Users|home|mnt|opt)\\|(?:\/Users\/|\/home\/)/i);
+  assert.doesNotMatch(serialized, /gpt-image|prompt_text|secret|api key/i);
   assert.doesNotMatch(serialized, /references?[\\/][^\s)]+/i);
   for (const stage of Object.values(bundle.stages)) {
     assert.ok(stage.rules.length <= MAX_RULES_PER_STAGE);
     assert.ok(stage.rules.join('\n').length <= MAX_STAGE_CHARS);
     for (const skillId of stage.skillIds) assert.ok(stage.rules.some((rule) => rule.startsWith(`[${skillId}] `)));
+    for (const skillId of stage.skillIds) assert.ok(stage.moduleIds.some((id) => id.startsWith(`${skillId}:`)));
   }
+  assert.equal(bundle.modules.length, REQUIRED_SKILLS.length * 2);
+  assert.ok(bundle.modules.every((module) => module.content.length <= MAX_MODULE_CHARS));
 });
 
 test('stagePrompt injects verified compiled rules into the existing playbook', () => {
   const prompt = stagePrompt(path.join(os.tmpdir(), 'mmw-project'), 'analysis');
-  assert.match(prompt, /Compiled scientific skill rules \(stage-scoped\)/);
+  assert.match(prompt, /Compiled scientific workflow \(self-contained, stage-scoped\)/);
   assert.match(prompt, /mmc-problem-intake/);
+  assert.match(prompt, /Ambiguity sensitivity precheck/);
   assert.equal(prompt.includes('C:\\Users\\'), false);
+});
+
+test('compiled workflow contains concrete research, modeling, plotting, and writing mechanisms', () => {
+  const analysis = skillGuidanceForStage('analysis');
+  const solving = skillGuidanceForStage('solving');
+  const paper = skillGuidanceForStage('paper');
+  const review = skillGuidanceForStage('review');
+
+  assert.match(analysis, /rival explanation/i);
+  assert.match(analysis, /rolling(?:-| or expanding )origin/i);
+  assert.match(analysis, /Identifier verification/i);
+  assert.match(analysis, /Pareto frontier/i);
+  assert.match(solving, /constraint residuals/i);
+  assert.match(solving, /Monte Carlo error/i);
+  assert.match(solving, /rank reversal/i);
+  assert.match(paper, /claim-evidence-boundary/i);
+  assert.match(paper, /vector PDF\/SVG/i);
+  assert.match(review, /causal evidence only with identification/i);
+  assert.match(review, /page by page/i);
 });
 
 test('packaged builds keep compiled skill rules inside the protected runtime', () => {
@@ -127,13 +159,35 @@ test('generated bundle is self-contained and requires every workflow skill', asy
   const sourceRoot = path.join(root, 'skills');
   for (const definition of REQUIRED_SKILLS) {
     const directory = path.join(sourceRoot, definition.relative);
-    await fsp.mkdir(directory, { recursive: true });
-    await fsp.writeFile(path.join(directory, 'SKILL.md'), `# ${definition.id}\nUse verified data and reproducible code.`, 'utf8');
+    await fsp.mkdir(path.join(directory, 'references'), { recursive: true });
+    await fsp.writeFile(
+      path.join(directory, 'SKILL.md'),
+      `# ${definition.id}\nUse verified data, an explicit baseline, declared assumptions, and reproducible code for every accepted result.`,
+      'utf8',
+    );
+    const handbookNames = {
+      'mmc-workflow-orchestrator': 'pipeline-contract.md',
+      'mmc-problem-intake': 'input-contract.md',
+      'mmc-literature-evidence': 'evidence-schema.md',
+      'mmc-model-design': 'model-contract.md',
+      'mmc-computational-experiment': 'result-contract.md',
+      'mmc-result-validation': 'validation-matrix.md',
+      'mmc-scientific-visualization': 'figure-contract.md',
+      'mmc-paper-authoring': 'claim-evidence-map.md',
+      'mmc-prose-polish': 'prose-rubric.md',
+      'mmc-submission-audit': 'audit-rubric.md',
+    };
+    await fsp.writeFile(
+      path.join(directory, 'references', handbookNames[definition.id]),
+      `# ${definition.id} handbook\nThis self-contained handbook provides deterministic research and modeling decisions without external resources.`,
+      'utf8',
+    );
   }
   const outputPath = path.join(root, 'bundle.json');
   const compiled = await compileAgentSkills({ skillsRoot: sourceRoot, outputPath });
   assert.deepEqual(compiled.sources.map((source) => source.id), REQUIRED_SKILLS.map((skill) => skill.id));
   assert.equal(compiled.sources.every((source) => source.required), true);
+  assert.equal(compiled.modules.length, REQUIRED_SKILLS.length * 2);
   assert.equal(fs.existsSync(outputPath), true);
   await fsp.rm(root, { recursive: true, force: true });
 });

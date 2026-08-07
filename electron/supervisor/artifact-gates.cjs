@@ -4,6 +4,8 @@ const path = require('node:path');
 const YAML = require('yaml');
 
 const {
+  isSafeArtifactPath,
+  isValidDoi,
   validateAggregateContract,
   validateEvidenceManifest,
   validateResultsContracts,
@@ -337,7 +339,16 @@ const STRUCTURED_ARTIFACT_VALIDATORS = Object.freeze({
       && (hasScalar(record, 'status') || hasCollection(record, 'fields') || hasCollection(record, 'shape'))),
   'work/01_analysis/model_contract.yaml': (value) => hasScalar(value, 'schema_version')
     && validRecords(value, 'models', (record) => hasScalar(record, 'subproblem_id')
-      && (hasScalar(record, 'method') || hasScalar(record, 'selected_method'))),
+      && (hasScalar(record, 'method') || hasScalar(record, 'selected_method'))
+      && hasScalar(record, 'claim_type')
+      && hasScalar(record, 'estimand_or_objective')
+      && Array.isArray(record.candidate_families)
+      && record.candidate_families.length >= 2
+      && hasScalar(record, 'baseline')
+      && hasCollection(record, 'assumptions')
+      && hasCollection(record, 'validation_tests')
+      && hasCollection(record, 'failure_modes')
+      && hasScalar(record, 'fallback')),
   'work/01_analysis/validation_plan.yaml': (value) => hasScalar(value, 'schema_version')
     && validRecords(value, 'checks', (record) => hasScalar(record, 'subproblem_id')
       && (hasScalar(record, 'method') || hasScalar(record, 'type') || hasScalar(record, 'check'))),
@@ -345,11 +356,17 @@ const STRUCTURED_ARTIFACT_VALIDATORS = Object.freeze({
     && validRecords(value, 'figures', (record) => (hasScalar(record, 'id') || hasScalar(record, 'figure_id')) && hasScalar(record, 'claim')),
   'work/01_analysis/literature/evidence_map.yaml': (value) => hasScalar(value, 'schema_version')
     && validRecords(value, 'evidence', (record) => hasScalar(record, 'id')
-      && hasScalar(record, 'claim')
-      && hasScalar(record, 'title')
-      && hasScalar(record, 'year')
-      && hasScalar(record, 'status')
-      && hasCollection(record, 'verification_sources')),
+      && (hasScalar(record, 'claim') || hasScalar(record, 'claim_supported'))
+      && String(record.status || '').toLowerCase() === 'verified'
+      && hasScalar(record, 'role')
+      && isRecord(record.metadata)
+      && hasScalar(record.metadata, 'title')
+      && hasScalar(record.metadata, 'year')
+      && isValidDoi(record.metadata.doi)
+      && isRecord(record.verification)
+      && hasScalar(record.verification, 'service')
+      && Array.isArray(record.verification.checked_fields)
+      && ['title', 'year', 'doi'].every((field) => record.verification.checked_fields.includes(field))),
   'work/02_solving/environment.yaml': (value) => hasScalar(value, 'schema_version')
     && hasCollection(value, 'runtime')
     && hasCollection(value, 'dependencies', { allowEmpty: true }),
@@ -360,10 +377,15 @@ const STRUCTURED_ARTIFACT_VALIDATORS = Object.freeze({
       && hasCollection(record, 'evidence_paths')),
   'work/02_solving/figures/figure_manifest.yaml': (value) => hasScalar(value, 'schema_version')
     && validRecords(value, 'figures', (record) => hasScalar(record, 'figure_id')
+      && hasScalar(record, 'subproblem_id')
       && hasScalar(record, 'claim')
       && hasCollection(record, 'source_data')
+      && hasCollection(record, 'data_locators')
       && hasScalar(record, 'generation_source')
-      && hasCollection(record, 'exports')),
+      && hasScalar(record, 'archetype')
+      && hasScalar(record, 'final_width')
+      && hasCollection(record, 'exports')
+      && String(record.qa_status || '').toLowerCase() === 'passed'),
   'work/03_paper/prose_polish_report.yaml': (value) => hasScalar(value, 'schema_version')
     && hasScalar(value, 'decision')
     && validRecords(value, 'findings', (record) => hasScalar(record, 'location')
@@ -382,6 +404,27 @@ function validateStructuredArtifactSchema(suffix, value) {
   const normalized = String(suffix).replace(/\\/g, '/').toLowerCase();
   const validate = STRUCTURED_ARTIFACT_VALIDATORS[normalized];
   return !validate || validate(value);
+}
+
+async function validateFigureManifestArtifacts(manifest, analysisContract, artifactExists) {
+  const subproblemIds = new Set(Array.isArray(analysisContract?.subproblems)
+    ? analysisContract.subproblems.map((subproblem) => subproblem.id)
+    : []);
+  for (const figure of manifest?.figures || []) {
+    if (!subproblemIds.has(figure.subproblem_id)) {
+      return { ok: false, code: 'FIGURE_SUBPROBLEM_UNKNOWN', reason: `Figure ${figure.figure_id} references an unknown subproblem.` };
+    }
+    const paths = [...figure.source_data, figure.generation_source, ...figure.exports];
+    for (const artifact of paths) {
+      if (!isSafeArtifactPath(artifact)) {
+        return { ok: false, code: 'FIGURE_ARTIFACT_UNSAFE', reason: `Figure ${figure.figure_id} contains an unsafe artifact path.` };
+      }
+      if (!await artifactExists(artifact)) {
+        return { ok: false, code: 'FIGURE_ARTIFACT_MISSING', reason: `Figure ${figure.figure_id} references missing artifact ${artifact}.` };
+      }
+    }
+  }
+  return { ok: true };
 }
 
 async function requireStructuredArtifact(files, suffix, code, label) {
@@ -567,10 +610,16 @@ async function validateStageArtifacts(rootOrView, stage, options = {}) {
       ['work/02_solving/figures/figure_manifest.yaml', 'FIGURE_MANIFEST_MISSING', 'scientific figure manifest'],
     ];
     const solvingContractFiles = [];
+    let figureManifest;
     for (const [suffix, code, label] of solvingContracts) {
       const required = await requireStructuredArtifact(files, suffix, code, label);
       if (!required.ok) return required;
       solvingContractFiles.push(required.file);
+      if (suffix.endsWith('figure_manifest.yaml')) figureManifest = required.value;
+    }
+    const figureArtifacts = await validateFigureManifestArtifacts(figureManifest, subproblemsContract, artifactExists);
+    if (!figureArtifacts.ok) {
+      return { ...figureArtifacts, artifactRefs: ['work/02_solving/figures/figure_manifest.yaml'] };
     }
     const validationSummary = await requireTextArtifact(
       files,
@@ -724,5 +773,6 @@ module.exports = {
   evaluateStageGate,
   listFiles,
   validateStructuredArtifactSchema,
+  validateFigureManifestArtifacts,
   validateStageArtifacts,
 };

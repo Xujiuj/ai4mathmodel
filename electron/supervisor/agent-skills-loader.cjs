@@ -7,6 +7,7 @@ function canonicalPayload(value) {
     schemaVersion: value.schemaVersion,
     bundleVersion: value.bundleVersion,
     sources: value.sources,
+    modules: value.modules,
     stages: value.stages,
   });
 }
@@ -26,7 +27,10 @@ function skillGuidanceForStage(stage, value = bundle) {
   const checked = verifyBundle(value);
   const entry = checked.stages?.[String(stage || '').trim().toLowerCase()];
   if (!entry || !Array.isArray(entry.rules) || !entry.rules.length) return '';
-  return `\n\nCompiled scientific skill rules (stage-scoped):\n${entry.rules.join('\n')}`;
+  const modules = entry.moduleIds.map((id) => checked.modules.find((module) => module.id === id));
+  if (modules.some((module) => !module)) return '';
+  const handbook = modules.map((module) => `\n### ${module.title}\n${module.content}`).join('\n');
+  return `\n\nCompiled scientific workflow (self-contained, stage-scoped):\n${entry.rules.join('\n')}\n${handbook}`;
 }
 
 verifyBundle(bundle);

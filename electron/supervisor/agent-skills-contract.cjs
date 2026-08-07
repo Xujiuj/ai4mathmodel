@@ -1,5 +1,5 @@
-const SCHEMA_VERSION = 1;
-const BUNDLE_VERSION = '2';
+const SCHEMA_VERSION = 2;
+const BUNDLE_VERSION = '3';
 
 const REQUIRED_SOURCE_IDS = Object.freeze([
   'mmc-workflow-orchestrator',
@@ -57,16 +57,30 @@ function assertBundleStructure(value, {
   message = 'Agent skill bundle structure is invalid.',
 } = {}) {
   const sourceIds = Array.isArray(value?.sources) ? value.sources.map((source) => source?.id) : [];
+  const modules = Array.isArray(value?.modules) ? value.modules : [];
+  const moduleIds = modules.map((module) => module?.id);
   const stageNames = Object.keys(value?.stages || {});
   let valid = value?.schemaVersion === SCHEMA_VERSION
     && value?.bundleVersion === BUNDLE_VERSION
     && sameArray(sourceIds, REQUIRED_SOURCE_IDS)
+    && modules.length >= REQUIRED_SOURCE_IDS.length * 2
+    && new Set(moduleIds).size === moduleIds.length
+    && modules.every((module) => typeof module?.id === 'string'
+      && REQUIRED_SOURCE_IDS.includes(module.skillId)
+      && typeof module.title === 'string'
+      && typeof module.content === 'string'
+      && module.content.length >= 80
+      && /^[a-f0-9]{64}$/.test(module.sha256 || ''))
     && sameArray(stageNames, Object.keys(STAGE_SKILL_IDS));
 
   for (const [stage, expectedIds] of Object.entries(STAGE_SKILL_IDS)) {
     const entry = value?.stages?.[stage];
     valid = valid
       && sameArray(entry?.skillIds, expectedIds)
+      && Array.isArray(entry?.moduleIds)
+      && entry.moduleIds.length >= expectedIds.length * 2
+      && entry.moduleIds.every((id) => moduleIds.includes(id))
+      && expectedIds.every((id) => entry.moduleIds.some((moduleId) => moduleId.startsWith(`${id}:`)))
       && Array.isArray(entry?.rules)
       && entry.rules.length > 0
       && entry.rules.every((rule) => typeof rule === 'string' && rule.trim().length > 0)

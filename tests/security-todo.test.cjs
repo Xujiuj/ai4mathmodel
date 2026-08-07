@@ -68,10 +68,10 @@ async function writeEnhancedAnalysisContracts(directory) {
   await fsp.mkdir(literature, { recursive: true });
   await Promise.all([
     fsp.writeFile(path.join(directory, 'data_profile.yaml'), 'schema_version: 1\ndatasets:\n  - path: inputs/problem/statement.txt\n    status: profiled\n', 'utf8'),
-    fsp.writeFile(path.join(directory, 'model_contract.yaml'), 'schema_version: 1\nmodels:\n  - subproblem_id: sp-1\n    method: validated baseline\n', 'utf8'),
+    fsp.writeFile(path.join(directory, 'model_contract.yaml'), 'schema_version: 1\nmodels:\n  - subproblem_id: sp-1\n    method: regularized regression\n    claim_type: predictive\n    estimand_or_objective: future conditional mean\n    candidate_families: [linear regression, tree ensemble]\n    baseline: historical mean\n    assumptions: [stable sampling]\n    validation_tests: [held-out error]\n    failure_modes: [distribution shift]\n    fallback: regularized linear baseline\n', 'utf8'),
     fsp.writeFile(path.join(directory, 'validation_plan.yaml'), 'schema_version: 1\nchecks:\n  - subproblem_id: sp-1\n    method: baseline comparison\n', 'utf8'),
     fsp.writeFile(path.join(directory, 'figure_plan.yaml'), 'schema_version: 1\nfigures:\n  - id: fig-1\n    claim: model comparison\n', 'utf8'),
-    fsp.writeFile(path.join(literature, 'evidence_map.yaml'), 'schema_version: 1\nevidence:\n  - id: lit-1\n    claim: The method is applicable.\n    title: Verified modeling method\n    year: 2025\n    status: verified\n    verification_sources: [Crossref]\n', 'utf8'),
+    fsp.writeFile(path.join(literature, 'evidence_map.yaml'), 'schema_version: 1\nevidence:\n  - id: lit-1\n    claim_supported: The method is applicable.\n    status: verified\n    role: method_origin\n    metadata:\n      title: Verified modeling method\n      year: 2025\n      doi: 10.1000/verified\n    verification:\n      service: Crossref\n      checked_fields: [title, year, doi]\n', 'utf8'),
     fsp.writeFile(path.join(literature, 'references.bib'), '@article{verified, title={Verified modeling method}, author={Author}, journal={Journal}, year={2025}}\n', 'utf8'),
     fsp.writeFile(path.join(directory, 'intake_risks.md'), '# Intake risks\n\nAmbiguity, missing-data exposure, conservative interpretation, and resolution checks are recorded here. '.repeat(3), 'utf8'),
     fsp.writeFile(path.join(directory, 'model_design.md'), '# Model design\n\nCandidate methods, equations, assumptions, baseline, interfaces, and failure conditions are compared. '.repeat(12), 'utf8'),

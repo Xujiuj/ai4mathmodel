@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const {
   ensureWorkspaceInitialized,
+  validateFigureManifestArtifacts,
   validateStageArtifacts,
   validateStructuredArtifactSchema,
 } = require('../electron/supervisor/artifact-gates.cjs');
@@ -21,10 +22,10 @@ async function writeEnhancedAnalysisContracts(directory) {
   await fs.mkdir(literature, { recursive: true });
   await Promise.all([
     fs.writeFile(path.join(directory, 'data_profile.yaml'), 'schema_version: 1\ndatasets:\n  - path: inputs/problem/statement.txt\n    status: profiled\n', 'utf8'),
-    fs.writeFile(path.join(directory, 'model_contract.yaml'), 'schema_version: 1\nmodels:\n  - subproblem_id: sp-1\n    method: validated baseline\n', 'utf8'),
+    fs.writeFile(path.join(directory, 'model_contract.yaml'), 'schema_version: 1\nmodels:\n  - subproblem_id: sp-1\n    method: regularized regression\n    claim_type: predictive\n    estimand_or_objective: future conditional mean\n    candidate_families: [linear regression, tree ensemble]\n    baseline: historical mean\n    assumptions: [stable sampling]\n    validation_tests: [held-out error]\n    failure_modes: [distribution shift]\n    fallback: regularized linear baseline\n', 'utf8'),
     fs.writeFile(path.join(directory, 'validation_plan.yaml'), 'schema_version: 1\nchecks:\n  - subproblem_id: sp-1\n    method: baseline comparison\n', 'utf8'),
     fs.writeFile(path.join(directory, 'figure_plan.yaml'), 'schema_version: 1\nfigures:\n  - id: fig-1\n    claim: model comparison\n', 'utf8'),
-    fs.writeFile(path.join(literature, 'evidence_map.yaml'), 'schema_version: 1\nevidence:\n  - id: lit-1\n    claim: The method is applicable.\n    title: Verified modeling method\n    year: 2025\n    status: verified\n    verification_sources: [Crossref]\n', 'utf8'),
+    fs.writeFile(path.join(literature, 'evidence_map.yaml'), 'schema_version: 1\nevidence:\n  - id: lit-1\n    claim_supported: The method is applicable.\n    status: verified\n    role: method_origin\n    metadata:\n      title: Verified modeling method\n      year: 2025\n      doi: 10.1000/verified\n    verification:\n      service: Crossref\n      checked_fields: [title, year, doi]\n', 'utf8'),
     fs.writeFile(path.join(literature, 'references.bib'), '@article{verified, title={Verified modeling method}, author={Author}, journal={Journal}, year={2025}}\n', 'utf8'),
     fs.writeFile(path.join(directory, 'intake_risks.md'), '# Intake risks\n\nAmbiguity, missing-data exposure, conservative interpretation, and resolution checks are recorded here. '.repeat(3), 'utf8'),
     fs.writeFile(path.join(directory, 'model_design.md'), '# Model design\n\nCandidate methods, equations, assumptions, baseline, interfaces, and failure conditions are compared. '.repeat(12), 'utf8'),
@@ -36,13 +37,13 @@ async function writeEnhancedAnalysisContracts(directory) {
 test('structured workflow contracts reject arbitrary YAML objects', () => {
   const valid = {
     'work/01_analysis/data_profile.yaml': { schema_version: 1, datasets: [{ path: 'inputs/data.csv', status: 'profiled' }] },
-    'work/01_analysis/model_contract.yaml': { schema_version: 1, models: [{ subproblem_id: 'sp-1', method: 'baseline' }] },
+    'work/01_analysis/model_contract.yaml': { schema_version: 1, models: [{ subproblem_id: 'sp-1', method: 'regression', claim_type: 'predictive', estimand_or_objective: 'conditional mean', candidate_families: ['linear', 'tree'], baseline: 'mean', assumptions: ['stable sampling'], validation_tests: ['holdout'], failure_modes: ['shift'], fallback: 'linear' }] },
     'work/01_analysis/validation_plan.yaml': { schema_version: 1, checks: [{ subproblem_id: 'sp-1', method: 'holdout' }] },
     'work/01_analysis/figure_plan.yaml': { schema_version: 1, figures: [{ id: 'fig-1', claim: 'comparison' }] },
-    'work/01_analysis/literature/evidence_map.yaml': { schema_version: 1, evidence: [{ id: 'lit-1', claim: 'supported', title: 'Paper', year: 2025, status: 'verified', verification_sources: ['Crossref'] }] },
+    'work/01_analysis/literature/evidence_map.yaml': { schema_version: 1, evidence: [{ id: 'lit-1', claim_supported: 'supported', status: 'verified', role: 'method_origin', metadata: { title: 'Paper', year: 2025, doi: '10.1000/verified' }, verification: { service: 'Crossref', checked_fields: ['title', 'year', 'doi'] } }] },
     'work/02_solving/environment.yaml': { schema_version: 1, runtime: { name: 'python', version: '3.11' }, dependencies: [] },
     'work/02_solving/validation_report.yaml': { schema_version: 1, checks: [{ id: 'check-1', subproblem_id: 'sp-1', status: 'passed', evidence_paths: ['work/result.yaml'] }] },
-    'work/02_solving/figures/figure_manifest.yaml': { schema_version: 1, figures: [{ figure_id: 'fig-1', claim: 'comparison', source_data: ['work/data.csv'], generation_source: 'work/plot.py', exports: ['work/fig.pdf'] }] },
+    'work/02_solving/figures/figure_manifest.yaml': { schema_version: 1, figures: [{ figure_id: 'fig-1', subproblem_id: 'sp-1', claim: 'comparison', source_data: ['work/data.csv'], data_locators: ['metrics.score'], generation_source: 'work/plot.py', archetype: 'dot interval', final_width: 'single-column', exports: ['work/fig.pdf'], qa_status: 'passed' }] },
     'work/03_paper/prose_polish_report.yaml': { schema_version: 1, decision: 'PASS', findings: [], overclaims: [], unresolved_terminology: [] },
     'work/04_review/release_manifest.yaml': { schema_version: 1, decision: 'PASS', files: [{ path: 'work/03_paper/main.pdf', sha256: 'a'.repeat(64) }] },
   };
@@ -50,6 +51,44 @@ test('structured workflow contracts reject arbitrary YAML objects', () => {
     assert.equal(validateStructuredArtifactSchema(artifact, value), true, artifact);
     assert.equal(validateStructuredArtifactSchema(artifact, { foo: 'bar' }), false, artifact);
   }
+});
+
+test('quality gates reject slogan-only model, literature, and figure contracts', () => {
+  assert.equal(validateStructuredArtifactSchema('work/01_analysis/model_contract.yaml', {
+    schema_version: 1,
+    models: [{ subproblem_id: 'sp-1', method: 'advanced model' }],
+  }), false);
+  assert.equal(validateStructuredArtifactSchema('work/01_analysis/literature/evidence_map.yaml', {
+    schema_version: 1,
+    evidence: [{ id: 'lit-1', claim: 'supported', title: 'unverified', status: 'candidate' }],
+  }), false);
+  assert.equal(validateStructuredArtifactSchema('work/02_solving/figures/figure_manifest.yaml', {
+    schema_version: 1,
+    figures: [{ figure_id: 'fig-1', claim: 'looks good', source_data: ['work/data.csv'], generation_source: 'work/plot.py', exports: ['work/fig.png'] }],
+  }), false);
+});
+
+test('figure manifest gate resolves ownership and every declared artifact', async () => {
+  const manifest = {
+    figures: [{
+      figure_id: 'fig-1',
+      subproblem_id: 'sp-1',
+      source_data: ['work/02_solving/sub_problem_1/results.yaml'],
+      generation_source: 'work/02_solving/sub_problem_1/plot.py',
+      exports: ['work/02_solving/sub_problem_1/figures/result.pdf'],
+    }],
+  };
+  const contract = { subproblems: [{ id: 'sp-1' }] };
+  const existing = new Set([
+    'work/02_solving/sub_problem_1/results.yaml',
+    'work/02_solving/sub_problem_1/plot.py',
+    'work/02_solving/sub_problem_1/figures/result.pdf',
+  ]);
+  assert.equal((await validateFigureManifestArtifacts(manifest, contract, async (file) => existing.has(file))).ok, true);
+  const missing = await validateFigureManifestArtifacts(manifest, contract, async () => false);
+  assert.equal(missing.code, 'FIGURE_ARTIFACT_MISSING');
+  const unknown = await validateFigureManifestArtifacts(manifest, { subproblems: [{ id: 'sp-2' }] }, async () => true);
+  assert.equal(unknown.code, 'FIGURE_SUBPROBLEM_UNKNOWN');
 });
 
 test('initialization copies the complete uploaded template into an empty paper workspace', async (context) => {

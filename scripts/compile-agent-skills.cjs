@@ -19,6 +19,20 @@ const MAX_RULES_PER_STAGE = MAX_RULES_PER_SKILL * 7;
 const MAX_RULE_CHARS = 360;
 const MAX_STAGE_CHARS = 12_000;
 const MAX_SUMMARY_CHARS = 320;
+const MAX_MODULE_CHARS = 24_000;
+
+const HANDBOOK_FILES = Object.freeze({
+  'mmc-workflow-orchestrator': 'pipeline-contract.md',
+  'mmc-problem-intake': 'input-contract.md',
+  'mmc-literature-evidence': 'evidence-schema.md',
+  'mmc-model-design': 'model-contract.md',
+  'mmc-computational-experiment': 'result-contract.md',
+  'mmc-result-validation': 'validation-matrix.md',
+  'mmc-scientific-visualization': 'figure-contract.md',
+  'mmc-paper-authoring': 'claim-evidence-map.md',
+  'mmc-prose-polish': 'prose-rubric.md',
+  'mmc-submission-audit': 'audit-rubric.md',
+});
 
 const REQUIRED_SKILLS = Object.freeze(REQUIRED_SOURCE_IDS.map((id) => ({
   id,
@@ -92,11 +106,40 @@ function compileRules(markdown) {
   return rules;
 }
 
-function compileSource({ id, file, required }) {
+function compileModule(markdown) {
+  const withoutResourceDirections = stripFrontmatter(markdown)
+    .split('\n')
+    .filter((line) => !/references?[\\/]/i.test(line))
+    .join('\n');
+  const content = redactAbsolutePaths(withoutResourceDirections)
+    .replace(/\[([^\]]+)\]\(references?[\\/][^)]+\)/gi, '$1')
+    .replace(/\bSKILL\.md\b|\bAGENTS\.md\b/gi, '[source]')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (!content || content.length < 80) {
+    const error = new Error('Compiled skill module is empty or too small');
+    error.code = 'AGENT_SKILL_MODULE_EMPTY';
+    throw error;
+  }
+  if (content.length > MAX_MODULE_CHARS) {
+    const error = new Error(`Compiled skill module exceeds ${MAX_MODULE_CHARS} characters`);
+    error.code = 'AGENT_SKILL_MODULE_TOO_LARGE';
+    throw error;
+  }
+  return content;
+}
+
+function compileSource({ id, file, handbookFile, required }) {
   const source = fs.readFileSync(file, 'utf8');
+  const handbook = fs.readFileSync(handbookFile, 'utf8');
   const rules = compileRules(source);
   const normalized = normalizeNewlines(source);
   const summary = rules.slice(0, 3).join(' ').slice(0, MAX_SUMMARY_CHARS);
+  const documents = [
+    { suffix: 'procedure', title: `${id} operating procedure`, value: source },
+    { suffix: 'handbook', title: `${id} decision handbook`, value: handbook },
+  ];
   return {
     id,
     required: Boolean(required),
@@ -107,6 +150,16 @@ function compileSource({ id, file, required }) {
       summary,
     },
     rules,
+    modules: documents.map((document) => {
+      const content = compileModule(document.value);
+      return {
+        id: `${id}:${document.suffix}`,
+        skillId: id,
+        title: document.title,
+        sha256: sha256(content),
+        content,
+      };
+    }),
   };
 }
 
@@ -115,6 +168,7 @@ function canonicalPayload(bundle) {
     schemaVersion: bundle.schemaVersion,
     bundleVersion: bundle.bundleVersion,
     sources: bundle.sources,
+    modules: bundle.modules,
     stages: bundle.stages,
   });
 }
@@ -122,20 +176,23 @@ function canonicalPayload(bundle) {
 function resolveSources({ skillsRoot = DEFAULT_SKILLS_ROOT } = {}) {
   const sources = [];
   for (const definition of REQUIRED_SKILLS) {
-    const file = path.join(skillsRoot, definition.relative, 'SKILL.md');
-    if (!fs.existsSync(file)) {
+    const directory = path.join(skillsRoot, definition.relative);
+    const file = path.join(directory, 'SKILL.md');
+    const handbookFile = path.join(directory, 'references', HANDBOOK_FILES[definition.id]);
+    if (!fs.existsSync(file) || !fs.existsSync(handbookFile)) {
       const error = new Error(`Required agent skill is missing: ${definition.id}`);
       error.code = 'AGENT_SKILL_REQUIRED_MISSING';
       error.skillId = definition.id;
       throw error;
     }
-    sources.push(compileSource({ id: definition.id, file, required: true }));
+    sources.push(compileSource({ id: definition.id, file, handbookFile, required: true }));
   }
   return sources;
 }
 
 function buildBundle(sources) {
   const available = new Set(sources.map((source) => source.id));
+  const modules = sources.flatMap((source) => source.modules || []);
   const stages = {};
   for (const [stage, ids] of Object.entries(STAGE_ALLOWLIST)) {
     const stageSources = ids
@@ -155,13 +212,15 @@ function buildBundle(sources) {
     }
     stages[stage] = {
       skillIds: ids.filter((id) => available.has(id)),
+      moduleIds: modules.filter((module) => ids.includes(module.skillId)).map((module) => module.id),
       rules,
     };
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     bundleVersion: BUNDLE_VERSION,
     sources: sources.map(({ id, required, sourceSummary }) => ({ id, required, sourceSummary })),
+    modules,
     stages,
   };
 }
@@ -232,6 +291,7 @@ module.exports = {
   MAX_RULES_PER_SKILL,
   MAX_RULES_PER_STAGE,
   MAX_STAGE_CHARS,
+  MAX_MODULE_CHARS,
   REQUIRED_SKILLS,
   STAGE_ALLOWLIST,
   buildBundle,
@@ -239,6 +299,7 @@ module.exports = {
   compileAgentSkills,
   prepareAgentSkillsForBuild,
   compileRules,
+  compileModule,
   compileSource,
   loadBundledFallback,
   resolveSources,
