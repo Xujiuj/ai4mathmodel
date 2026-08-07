@@ -66,6 +66,37 @@ For each failure specify a detection signal, a response, and a fallback. Fallbac
 
 ## Required model contract fields
 
-Each subproblem record must include `subproblem_id`, `claim_type`, `estimand_or_objective`, `candidate_families`, `selected_family`, `baseline`, `variables`, `equations_or_algorithm`, `assumptions`, `identifiability`, `data_interface`, `solver_or_training`, `validation_tests`, `failure_modes`, `fallback`, and `paper_outputs`.
+Each subproblem record must include `subproblem_id`, controlled `family_id`, stable
+`algorithm_id`, `method`, `claim_type`, `estimand_or_objective`,
+`candidate_families`, `baseline`, `variables`, `equations_or_algorithm`,
+`assumptions`, `data_interface`, `solver_or_training`, `validation_tests`,
+`failure_modes`, `fallback`, and `paper_outputs`.
+
+Use only these family IDs: `ranking`, `forecasting`, `regression`,
+`classification`, `clustering`, `optimization`, `simulation`, `dynamics`,
+`network`, `spatial`, and `text`. Use a lowercase hyphenated algorithm ID such as
+`entropy-topsis`, `seasonal-arima`, `capacitated-vrp-milp`, or `sir-rk45`.
+
+```yaml
+schema_version: 1
+models:
+  - subproblem_id: sp-1
+    family_id: forecasting
+    algorithm_id: dynamic-regression-arima-errors
+    method: Dynamic regression with ARIMA errors
+    claim_type: predictive
+    estimand_or_objective: seven-day demand conditional mean and interval
+    candidate_families: [forecasting, regression]
+    baseline: seasonal naive at the same horizons
+    variables: {target: daily_demand, exogenous: [holiday, temperature]}
+    equations_or_algorithm: [causal feature construction, rolling-origin fitting, interval forecast]
+    assumptions: [covariates are known at forecast origin, residual process is locally stable]
+    data_interface: {time_index: date, sampling: daily, split: expanding origin}
+    solver_or_training: {horizon: 7, origins: 12, seed: 2025, stopping: fixed order search}
+    validation_tests: [horizon MAE versus seasonal naive, interval coverage, residual ACF]
+    failure_modes: [future covariate leakage, residual autocorrelation, coverage shortfall]
+    fallback: seasonal naive with empirical residual intervals
+    paper_outputs: [forecast table, horizon error table, forecast interval figure]
+```
 
 Exit only when another implementer can reproduce the intended computation without guessing a variable, split, metric, tolerance, or success condition.

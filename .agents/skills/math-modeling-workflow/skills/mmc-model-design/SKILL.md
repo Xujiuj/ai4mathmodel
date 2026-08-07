@@ -9,6 +9,9 @@ Turn the problem contract and evidence base into an executable modeling contract
 
 ## Method selection
 
+- Call `list_skill_resources` with the inferred problem families and read the matching model catalog and algorithm cards before final selection.
+- Record a stable `family_id` and `algorithm_id`; a free-form method name alone is not an implementable contract.
+- If no catalog entry satisfies the data and claim conditions, define a custom method with the same trigger, equation, algorithm, diagnostic, failure, and fallback fields.
 - Start from the decision target and data-generating structure, not from a preferred algorithm.
 - Compare at least two credible method families when alternatives exist.
 - Evaluate applicability, assumptions, identifiability, interpretability, computational cost, and validation strength.
@@ -41,5 +44,6 @@ Turn the problem contract and evidence base into an executable modeling contract
 - Every selected metric answers a competition requirement.
 - The contract contains no unverified result values or fabricated evidence.
 
-Read [references/model-contract.md](references/model-contract.md) for required fields.
-
+Read [references/model-contract.md](references/model-contract.md) for required fields,
+[references/model-family-catalog.md](references/model-family-catalog.md) for selection rules,
+and [references/algorithm-cards.md](references/algorithm-cards.md) for executable handoff details.

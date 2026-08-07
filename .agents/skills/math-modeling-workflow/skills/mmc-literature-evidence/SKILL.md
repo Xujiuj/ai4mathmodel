@@ -40,3 +40,12 @@ Build a compact evidence base that supports method choice and factual claims.
 - Missing support remains an explicit gap; polished prose must not conceal it.
 
 Read [references/evidence-schema.md](references/evidence-schema.md) for the structured record format.
+
+## Offline tooling
+
+Use the bundled standard-library script [scripts/literature_tools.py](scripts/literature_tools.py)
+to build a query boundary, normalize and deduplicate DOI/BibTeX metadata, and check
+claim-to-source bindings. Its commands and JSON contracts are documented in
+[references/literature-toolkit.md](references/literature-toolkit.md). It performs no
+network requests, so registry verification and search provenance remain explicit
+artifacts owned by the project.

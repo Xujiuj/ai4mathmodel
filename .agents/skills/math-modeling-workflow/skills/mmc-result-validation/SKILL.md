@@ -42,3 +42,20 @@ Challenge accepted computations before they become paper claims.
 - Limitations state where the model should not be trusted.
 
 Read [references/validation-matrix.md](references/validation-matrix.md) to select checks by model family.
+
+## Executable checks
+
+Use the bundled standard-library validator when a numerical check must be
+reproduced rather than described:
+
+```text
+python scripts/validate_results.py --self-test
+python scripts/validate_results.py --input validation-input.json --output validation-report.json
+```
+
+The JSON contract supports five focused checks: ordered rolling-origin
+forecasts versus a naive baseline, optimization feasibility and optimality
+gaps, ODE invariant drift and step convergence, Monte Carlo MCSE/warm-up, and
+ranking perturbations with rank-reversal detection. Read
+`references/validation-engine.md` before constructing the input. Preserve the
+input, report, and source artifact hashes in the run directory.

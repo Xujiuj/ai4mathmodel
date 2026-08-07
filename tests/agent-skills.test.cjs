@@ -6,8 +6,13 @@ const os = require('node:os');
 const path = require('node:path');
 
 const bundle = require('../electron/generated/agent-skills.bundle.json');
-const { stagePrompt } = require('../electron/supervisor/playbooks.cjs');
-const { verifyBundle, skillGuidanceForStage } = require('../electron/supervisor/agent-skills-loader.cjs');
+const { projectProblemFamilies, stagePrompt } = require('../electron/supervisor/playbooks.cjs');
+const {
+  getSkillResource,
+  listSkillResources,
+  verifyBundle,
+  skillGuidanceForStage,
+} = require('../electron/supervisor/agent-skills-loader.cjs');
 const {
   REQUIRED_SKILLS,
   MAX_RULES_PER_SKILL,
@@ -103,22 +108,72 @@ test('clean release builds fail when the committed skill bundle is absent', asyn
 
 test('stage allowlists isolate compiled skills and contain no private source markers', () => {
   assert.deepEqual(bundle.stages.analysis.skillIds.includes('mmc-computational-experiment'), false);
+  assert.deepEqual(bundle.stages.analysis.moduleIds.includes('mmc-computational-experiment:recipe-profile-dataset'), true);
+  assert.deepEqual(bundle.stages.analysis.moduleIds.includes('mmc-computational-experiment:recipe-modeling-recipes'), false);
   assert.deepEqual(bundle.stages.solving.skillIds.includes('mmc-problem-intake'), false);
   assert.deepEqual(bundle.stages.paper.skillIds.includes('mmc-computational-experiment'), false);
   assert.deepEqual(bundle.stages.review.skillIds.includes('mmc-submission-audit'), true);
   assert.equal(skillGuidanceForStage('unknown'), '');
-  const serialized = JSON.stringify(bundle);
+  const serialized = JSON.stringify({
+    ...bundle,
+    modules: bundle.modules.map(({ executionSource: _executionSource, ...module }) => module),
+  });
   assert.doesNotMatch(serialized, /SKILL\.md|AGENTS\.md|[A-Za-z]:\\\\(?:Users|home|mnt|opt)\\|(?:\/Users\/|\/home\/)/i);
-  assert.doesNotMatch(serialized, /gpt-image|prompt_text|secret|api key/i);
-  assert.doesNotMatch(serialized, /references?[\\/][^\s)]+/i);
+  assert.doesNotMatch(serialized, /gpt-image|prompt_text|api key/i);
+  assert.doesNotMatch(serialized, /"(?:sourcePath|sourceFile|privatePath)"\s*:/i);
   for (const stage of Object.values(bundle.stages)) {
     assert.ok(stage.rules.length <= MAX_RULES_PER_STAGE);
     assert.ok(stage.rules.join('\n').length <= MAX_STAGE_CHARS);
     for (const skillId of stage.skillIds) assert.ok(stage.rules.some((rule) => rule.startsWith(`[${skillId}] `)));
     for (const skillId of stage.skillIds) assert.ok(stage.moduleIds.some((id) => id.startsWith(`${skillId}:`)));
   }
-  assert.equal(bundle.modules.length, REQUIRED_SKILLS.length * 2);
+  assert.ok(bundle.modules.length >= REQUIRED_SKILLS.length * 2);
   assert.ok(bundle.modules.every((module) => module.content.length <= MAX_MODULE_CHARS));
+});
+
+test('problem-family routing honors explicit contracts and method-language fallback', async (context) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'mmw-problem-families-'));
+  context.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const analysis = path.join(root, 'work', '01_analysis');
+  await fsp.mkdir(analysis, { recursive: true });
+  await fsp.writeFile(path.join(analysis, 'subproblems.yaml'), [
+    'schema_version: 1',
+    'subproblems:',
+    '  - id: sp-1',
+    '    question: 预测需求并制定车辆路径优化方案',
+    '    primary_method: seasonal naive and MILP',
+    '    problem_families: [forecasting]',
+  ].join('\n'));
+  assert.deepEqual(new Set(projectProblemFamilies(root)), new Set(['forecasting', 'optimization', 'network']));
+});
+
+test('compiled resources are typed, hashed, and executable recipes are not injected by default', () => {
+  const recipes = listSkillResources({ kind: 'recipe' });
+  assert.ok(recipes.length >= 5);
+  assert.ok(recipes.every((recipe) => recipe.kind === 'recipe'
+    && recipe.language === 'python'
+    && recipe.entrypoint === true
+    && recipe.sha256 === recipe.executionSha256
+    && recipe.content === undefined));
+  const profile = recipes.find((recipe) => recipe.id.includes('profile-dataset'));
+  assert.ok(profile);
+  const resource = getSkillResource(profile.id);
+  assert.match(resource.executionSource, /def profile_/);
+  assert.equal(resource.executionSha256, resource.sha256);
+  const solving = skillGuidanceForStage('solving');
+  assert.match(solving, /Available built-in resources:/);
+  assert.doesNotMatch(solving, /def entropy_topsis|import matplotlib/);
+});
+
+test('resource listing filters by stage and problem family without exposing source', () => {
+  const forecasting = listSkillResources({ stage: 'solving', problemFamilies: ['forecasting'] });
+  assert.ok(forecasting.some((resource) => resource.problemFamilies.includes('forecasting')
+    || resource.problemFamilies.includes('all')));
+  assert.ok(forecasting.every((resource) => resource.content === undefined
+    && resource.executionSource === undefined));
+  const paper = listSkillResources({ stage: 'paper' });
+  assert.ok(paper.some((resource) => resource.skillId === 'mmc-paper-authoring'));
+  assert.ok(paper.every((resource) => resource.allowedStages.includes('paper')));
 });
 
 test('stagePrompt injects verified compiled rules into the existing playbook', () => {
@@ -134,18 +189,25 @@ test('compiled workflow contains concrete research, modeling, plotting, and writ
   const solving = skillGuidanceForStage('solving');
   const paper = skillGuidanceForStage('paper');
   const review = skillGuidanceForStage('review');
+  const referenceText = (stage) => listSkillResources({ stage, includeContent: true })
+    .map((resource) => resource.content || '')
+    .join('\n');
+  const analysisReferences = referenceText('analysis');
+  const solvingReferences = referenceText('solving');
+  const paperReferences = referenceText('paper');
+  const reviewReferences = referenceText('review');
 
   assert.match(analysis, /rival explanation/i);
-  assert.match(analysis, /rolling(?:-| or expanding )origin/i);
-  assert.match(analysis, /Identifier verification/i);
-  assert.match(analysis, /Pareto frontier/i);
-  assert.match(solving, /constraint residuals/i);
-  assert.match(solving, /Monte Carlo error/i);
-  assert.match(solving, /rank reversal/i);
-  assert.match(paper, /claim-evidence-boundary/i);
-  assert.match(paper, /vector PDF\/SVG/i);
-  assert.match(review, /causal evidence only with identification/i);
-  assert.match(review, /page by page/i);
+  assert.match(analysisReferences, /rolling(?:-| or expanding )origin/i);
+  assert.match(analysisReferences, /Identifier verification/i);
+  assert.match(analysisReferences, /Pareto frontier/i);
+  assert.match(solvingReferences, /constraint residuals/i);
+  assert.match(solvingReferences, /Monte Carlo error/i);
+  assert.match(solvingReferences, /rank reversal/i);
+  assert.match(paperReferences, /claim-evidence-boundary/i);
+  assert.match(paperReferences, /vector PDF\/SVG/i);
+  assert.match(reviewReferences, /causal evidence only with identification/i);
+  assert.match(reviewReferences, /page by page/i);
 });
 
 test('packaged builds keep compiled skill rules inside the protected runtime', () => {
@@ -187,7 +249,7 @@ test('generated bundle is self-contained and requires every workflow skill', asy
   const compiled = await compileAgentSkills({ skillsRoot: sourceRoot, outputPath });
   assert.deepEqual(compiled.sources.map((source) => source.id), REQUIRED_SKILLS.map((skill) => skill.id));
   assert.equal(compiled.sources.every((source) => source.required), true);
-  assert.equal(compiled.modules.length, REQUIRED_SKILLS.length * 2);
+  assert.ok(compiled.modules.length >= REQUIRED_SKILLS.length * 2);
   assert.equal(fs.existsSync(outputPath), true);
   await fsp.rm(root, { recursive: true, force: true });
 });

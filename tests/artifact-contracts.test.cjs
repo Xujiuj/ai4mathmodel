@@ -83,6 +83,14 @@ test('subproblem contract rejects duplicate IDs, unknown dependencies, cycles, a
   internalSnapshot.subproblems[0].inputs = ['work/.staging/other-run/01_analysis/analysis.md'];
   assert.equal(validateSubproblemsContract(internalSnapshot).code, 'SUBPROBLEMS_UNSAFE_PATH');
 
+  const unsupportedFamily = subproblemsContract();
+  unsupportedFamily.subproblems[0].problem_families = ['forecasting', 'magic'];
+  assert.equal(validateSubproblemsContract(unsupportedFamily).code, 'SUBPROBLEMS_PROBLEM_FAMILY_INVALID');
+
+  const supportedFamily = subproblemsContract();
+  supportedFamily.subproblems[0].problem_families = ['forecasting'];
+  assert.equal(validateSubproblemsContract(supportedFamily).ok, true);
+
   await context.test('accepts a complete acyclic contract', () => {
     assert.equal(validateSubproblemsContract(subproblemsContract()).ok, true);
   });

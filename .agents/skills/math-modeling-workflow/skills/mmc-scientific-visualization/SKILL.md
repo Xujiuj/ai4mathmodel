@@ -21,6 +21,9 @@ Treat every figure as a scientific argument with reproducible evidence.
 
 ## Production routing
 
+- Call `list_skill_resources` and use `recipe-publication-plots` for a supported figure archetype before writing one-off plotting code.
+- Pass a JSON figure spec with the claim, source data, encodings, units, uncertainty semantics, final size, and output stem.
+- Keep the generated plotted-data CSV, manifest, QA JSON, PDF, SVG, and PNG together; a lone image is incomplete.
 - Build precise data-driven charts from reproducible plotting code and deterministic exports.
 - Use evidence hierarchy, purposeful multi-panel composition, and scientific schematics only when they clarify the argument.
 - Generate numerical figures with the same code family that reads their source data.

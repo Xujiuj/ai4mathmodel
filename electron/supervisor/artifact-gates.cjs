@@ -333,22 +333,41 @@ function validRecords(value, key, predicate, { allowEmpty = false } = {}) {
   return Array.isArray(records) && (allowEmpty || records.length > 0) && records.every((record) => isRecord(record) && predicate(record));
 }
 
+const MODEL_FAMILY_IDS = new Set([
+  'ranking', 'forecasting', 'regression', 'classification', 'clustering', 'optimization',
+  'simulation', 'dynamics', 'network', 'spatial', 'text',
+]);
+
+function validModelContractRecord(record) {
+  const familyId = String(record?.family_id || '').trim().toLowerCase();
+  const algorithmId = String(record?.algorithm_id || '').trim();
+  return hasScalar(record, 'subproblem_id')
+    && MODEL_FAMILY_IDS.has(familyId)
+    && /^[a-z0-9][a-z0-9-]{1,63}$/.test(algorithmId)
+    && (hasScalar(record, 'method') || hasScalar(record, 'selected_method'))
+    && hasScalar(record, 'claim_type')
+    && hasScalar(record, 'estimand_or_objective')
+    && Array.isArray(record.candidate_families)
+    && record.candidate_families.length >= 2
+    && record.candidate_families.every((candidate) => MODEL_FAMILY_IDS.has(String(candidate || '').trim().toLowerCase()))
+    && hasScalar(record, 'baseline')
+    && hasCollection(record, 'variables')
+    && hasCollection(record, 'equations_or_algorithm')
+    && hasCollection(record, 'assumptions')
+    && hasCollection(record, 'data_interface')
+    && hasCollection(record, 'solver_or_training')
+    && hasCollection(record, 'validation_tests')
+    && hasCollection(record, 'failure_modes')
+    && hasScalar(record, 'fallback')
+    && hasCollection(record, 'paper_outputs');
+}
+
 const STRUCTURED_ARTIFACT_VALIDATORS = Object.freeze({
   'work/01_analysis/data_profile.yaml': (value) => hasScalar(value, 'schema_version')
     && validRecords(value, 'datasets', (record) => hasScalar(record, 'path')
       && (hasScalar(record, 'status') || hasCollection(record, 'fields') || hasCollection(record, 'shape'))),
   'work/01_analysis/model_contract.yaml': (value) => hasScalar(value, 'schema_version')
-    && validRecords(value, 'models', (record) => hasScalar(record, 'subproblem_id')
-      && (hasScalar(record, 'method') || hasScalar(record, 'selected_method'))
-      && hasScalar(record, 'claim_type')
-      && hasScalar(record, 'estimand_or_objective')
-      && Array.isArray(record.candidate_families)
-      && record.candidate_families.length >= 2
-      && hasScalar(record, 'baseline')
-      && hasCollection(record, 'assumptions')
-      && hasCollection(record, 'validation_tests')
-      && hasCollection(record, 'failure_modes')
-      && hasScalar(record, 'fallback')),
+    && validRecords(value, 'models', validModelContractRecord),
   'work/01_analysis/validation_plan.yaml': (value) => hasScalar(value, 'schema_version')
     && validRecords(value, 'checks', (record) => hasScalar(record, 'subproblem_id')
       && (hasScalar(record, 'method') || hasScalar(record, 'type') || hasScalar(record, 'check'))),

@@ -1,6 +1,40 @@
+const fs = require('node:fs');
 const path = require('node:path');
+const YAML = require('yaml');
 const { skillGuidanceForStage } = require('./agent-skills-loader.cjs');
 const { normalizeProjectProfile } = require('../project-profile.cjs');
+
+const FAMILY_PATTERNS = Object.freeze({
+  ranking: /(?:ahp|topsis|entropy|dea|ranking|evaluation|评价|排序|决策)/i,
+  forecasting: /(?:forecast|arima|sarima|exponential smoothing|time series|预测|时间序列)/i,
+  regression: /(?:regression|glm|least squares|回归|拟合)/i,
+  classification: /(?:classification|classifier|roc|分类)/i,
+  clustering: /(?:cluster|k-means|聚类)/i,
+  optimization: /(?:optim|linear program|integer program|milp|routing|allocation|调度|优化|规划)/i,
+  simulation: /(?:monte carlo|queue|simulation|仿真|排队)/i,
+  dynamics: /(?:ode|differential equation|markov|sir|seir|动力学|微分方程|马尔可夫)/i,
+  network: /(?:graph|network|shortest path|routing|flow|tsp|vrp|图论|网络|最短路|路径|路线)/i,
+  spatial: /(?:spatial|gis|geograph|空间|地理)/i,
+  text: /(?:text|nlp|topic|文本|主题模型)/i,
+});
+
+function projectProblemFamilies(root) {
+  try {
+    const source = fs.readFileSync(path.join(root, 'work', '01_analysis', 'subproblems.yaml'), 'utf8');
+    const contract = YAML.parse(source);
+    const families = new Set();
+    for (const subproblem of Array.isArray(contract?.subproblems) ? contract.subproblems : []) {
+      for (const family of Array.isArray(subproblem?.problem_families) ? subproblem.problem_families : []) {
+        if (Object.hasOwn(FAMILY_PATTERNS, family)) families.add(family);
+      }
+      const text = `${subproblem?.question || ''} ${subproblem?.primary_method || ''}`;
+      for (const [family, pattern] of Object.entries(FAMILY_PATTERNS)) if (pattern.test(text)) families.add(family);
+    }
+    return [...families];
+  } catch {
+    return [];
+  }
+}
 
 const SHARED_RULES = `
 你正在当前工作目录内执行无人值守的数学建模竞赛任务。必须独立完成本阶段、运行必要验证并留下可供下一阶段直接使用的最终产物，不要等待用户确认。
@@ -44,7 +78,7 @@ const STAGE_PLAYBOOKS = Object.freeze({
       validation_requirements: ["必须通过的基线、误差或稳健性检查"]
 - work/01_analysis/figures/：仅保留被 analysis.md 实际引用的最终示意图；没有必要时可以为空。
 - work/01_analysis/data_profile.yaml：输入表结构、单位、缺失、异常、时间范围和连接键。
-- work/01_analysis/model_contract.yaml、model_design.md：候选方法比较、选型理由、数学合同、失败模式和回退方法。
+- work/01_analysis/model_contract.yaml、model_design.md：候选方法比较、选型理由、数学合同、失败模式和回退方法。每问必须使用受控 family_id 和稳定 algorithm_id，并完整声明 variables、equations_or_algorithm、data_interface、solver_or_training、validation_tests 与 paper_outputs；仅写一个方法名称不能通过门禁。
 - work/01_analysis/validation_plan.yaml、figure_plan.yaml：逐问可信度验证合同和论证型图表计划。
 - work/01_analysis/literature/evidence_map.yaml、search_log.md、references.bib、method_notes.md：经过元数据核验的文献证据线；只有 verified 记录可进入论文。
 `,
@@ -174,9 +208,18 @@ function stagePrompt(root, stage, profile) {
   return `${SHARED_RULES}\n项目标识：${relativeRoot}\n${projectProfileGuidance(profile)}\n${playbook}${skillGuidanceForStage(stage)}`.trim();
 }
 
+function stagePromptWithFamilies(root, stage, profile) {
+  const playbook = STAGE_PLAYBOOKS[stage];
+  if (!playbook) throw new Error(`Unsupported pipeline stage: ${stage}`);
+  const relativeRoot = path.basename(path.resolve(root));
+  const problemFamilies = stage === 'analysis' ? [] : projectProblemFamilies(root);
+  return `${SHARED_RULES}\nProject: ${relativeRoot}\n${projectProfileGuidance(profile)}\n${playbook}${skillGuidanceForStage(stage, { problemFamilies })}`.trim();
+}
+
 module.exports = {
   SHARED_RULES,
   STAGE_PLAYBOOKS,
+  projectProblemFamilies,
   projectProfileGuidance,
-  stagePrompt,
+  stagePrompt: stagePromptWithFamilies,
 };

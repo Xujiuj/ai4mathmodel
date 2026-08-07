@@ -9,6 +9,9 @@ Write the paper from approved evidence rather than from model memory.
 
 ## Evidence-first assembly
 
+- Call `list_skill_resources` and use `recipe-generate-paper-scaffold` only when the organizer did not provide a usable template.
+- Prefer the organizer template over the built-in scaffold; never overwrite a nonempty paper directory.
+- Run the literature normalizer, paper linter, and release auditor through their signed recipe IDs before declaring the paper ready.
 - Stage the supplied competition template and edit only the working copy.
 - Create a claim-evidence map before drafting prose.
 - Use only verified literature records, accepted result files, validated tables, and audited figures.
@@ -43,5 +46,17 @@ Write the paper from approved evidence rather than from model memory.
 - `work/03_paper/evidence_manifest.yaml` covering claims, figures, and citations.
 - Complete bibliography and all referenced assets.
 
-Read [references/claim-evidence-map.md](references/claim-evidence-map.md) for evidence types and prose checks.
+## Concrete authoring resources
 
+- Resolve the contest rules into the profile described in
+  `references/competition-profile.md`; unresolved limits are reported as unknown.
+- Expand the requested subproblems with `references/dynamic-chapter-blueprint.md`
+  so each answer, equation, figure, and validation record has a stable anchor.
+- For a new working copy, run the signed scaffold recipe with `--output
+  work/03_paper --language zh|en --competition-profile generic|cumcm|mcm`.
+  The profiles are original fallbacks; an organizer-provided class always takes
+  precedence. Use XeLaTeX or LuaLaTeX for Chinese.
+- Fill the generated evidence manifest before inserting numerical prose, then
+  compile with the engine recorded by the profile and inspect the resulting PDF.
+
+Read [references/claim-evidence-map.md](references/claim-evidence-map.md) for evidence types and prose checks.

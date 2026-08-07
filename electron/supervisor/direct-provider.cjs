@@ -56,6 +56,45 @@ const WORKSPACE_TOOL_DEFINITIONS = Object.freeze([
     },
   },
   {
+    name: 'list_skill_resources',
+    description: 'List packaged mathematical-modeling references, templates, and executable recipes available to the current stage. Returns metadata only, never recipe source code.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['procedure', 'reference', 'recipe', 'template'] },
+        problem_families: { type: 'array', items: { type: 'string', maxLength: 64 }, maxItems: 12 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'read_skill_reference',
+    description: 'Read a packaged reference or paper template by resource ID. Executable recipe source is never exposed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        resource_id: { type: 'string', minLength: 3, maxLength: 180 },
+        max_chars: { type: 'integer', minimum: 1000, maximum: 24000 },
+      },
+      required: ['resource_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'run_builtin_recipe',
+    description: 'Run a hash-verified packaged Python recipe inside the current stage sandbox and persist an execution receipt. Arguments must use project-relative paths.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        resource_id: { type: 'string', minLength: 3, maxLength: 180 },
+        arguments: { type: 'array', items: { type: 'string', maxLength: 2048 }, maxItems: 32 },
+        timeout_seconds: { type: 'integer', minimum: 5, maximum: 600 },
+      },
+      required: ['resource_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'write_workspace_file',
     description: '在 work 目录内创建或覆盖文本成果、Python 代码、TeX、表格或说明文件。不得写入 inputs。',
     input_schema: {

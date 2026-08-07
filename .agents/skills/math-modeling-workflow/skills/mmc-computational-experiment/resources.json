@@ -1,0 +1,18 @@
+{
+  "resources": {
+    "scripts/profile_dataset.py": {
+      "title": "Dataset profiler",
+      "summary": "Profile CSV shape, types, missingness, duplicates, numeric ranges, categories, and source hash before model selection.",
+      "problemFamilies": ["all"],
+      "allowedStages": ["analysis", "solving"],
+      "required": true
+    },
+    "scripts/modeling_recipes.py": {
+      "title": "Modeling computation recipes",
+      "summary": "Run leakage-safe splits, OLS, AHP, entropy-TOPSIS, GM(1,1), deterministic clustering, shortest paths, rolling origins, constraint checks, simulation uncertainty, and Markov diagnostics.",
+      "problemFamilies": ["ranking", "forecasting", "regression", "classification", "clustering", "optimization", "simulation", "dynamics", "network", "spatial", "text"],
+      "allowedStages": ["solving"],
+      "required": true
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "scripts/literature_tools.py": {
+      "title": "Literature evidence toolkit",
+      "summary": "Build search boundaries, normalize DOI and BibTeX metadata, deduplicate records, and validate claim-source ledgers.",
+      "problemFamilies": ["all"],
+      "allowedStages": ["analysis", "paper", "review"],
+      "required": true
+    }
+  }
+}

@@ -22,7 +22,7 @@ async function writeEnhancedAnalysisContracts(directory) {
   await fs.mkdir(literature, { recursive: true });
   await Promise.all([
     fs.writeFile(path.join(directory, 'data_profile.yaml'), 'schema_version: 1\ndatasets:\n  - path: inputs/problem/statement.txt\n    status: profiled\n', 'utf8'),
-    fs.writeFile(path.join(directory, 'model_contract.yaml'), 'schema_version: 1\nmodels:\n  - subproblem_id: sp-1\n    method: regularized regression\n    claim_type: predictive\n    estimand_or_objective: future conditional mean\n    candidate_families: [linear regression, tree ensemble]\n    baseline: historical mean\n    assumptions: [stable sampling]\n    validation_tests: [held-out error]\n    failure_modes: [distribution shift]\n    fallback: regularized linear baseline\n', 'utf8'),
+    fs.writeFile(path.join(directory, 'model_contract.yaml'), 'schema_version: 1\nmodels:\n  - subproblem_id: sp-1\n    family_id: regression\n    algorithm_id: ridge-regression\n    method: regularized regression\n    claim_type: predictive\n    estimand_or_objective: future conditional mean\n    candidate_families: [regression, classification]\n    baseline: historical mean\n    variables: {target: demand, features: predictors}\n    equations_or_algorithm: [fit ridge coefficients, predict held-out rows]\n    assumptions: [stable sampling]\n    data_interface: {input: inputs/problem/data.csv, split: grouped holdout}\n    solver_or_training: {seed: 2025, stopping: closed form}\n    validation_tests: [held-out error]\n    failure_modes: [distribution shift]\n    fallback: regularized linear baseline\n    paper_outputs: [coefficient table, residual figure]\n', 'utf8'),
     fs.writeFile(path.join(directory, 'validation_plan.yaml'), 'schema_version: 1\nchecks:\n  - subproblem_id: sp-1\n    method: baseline comparison\n', 'utf8'),
     fs.writeFile(path.join(directory, 'figure_plan.yaml'), 'schema_version: 1\nfigures:\n  - id: fig-1\n    claim: model comparison\n', 'utf8'),
     fs.writeFile(path.join(literature, 'evidence_map.yaml'), 'schema_version: 1\nevidence:\n  - id: lit-1\n    claim_supported: The method is applicable.\n    status: verified\n    role: method_origin\n    metadata:\n      title: Verified modeling method\n      year: 2025\n      doi: 10.1000/verified\n    verification:\n      service: Crossref\n      checked_fields: [title, year, doi]\n', 'utf8'),
@@ -37,7 +37,7 @@ async function writeEnhancedAnalysisContracts(directory) {
 test('structured workflow contracts reject arbitrary YAML objects', () => {
   const valid = {
     'work/01_analysis/data_profile.yaml': { schema_version: 1, datasets: [{ path: 'inputs/data.csv', status: 'profiled' }] },
-    'work/01_analysis/model_contract.yaml': { schema_version: 1, models: [{ subproblem_id: 'sp-1', method: 'regression', claim_type: 'predictive', estimand_or_objective: 'conditional mean', candidate_families: ['linear', 'tree'], baseline: 'mean', assumptions: ['stable sampling'], validation_tests: ['holdout'], failure_modes: ['shift'], fallback: 'linear' }] },
+    'work/01_analysis/model_contract.yaml': { schema_version: 1, models: [{ subproblem_id: 'sp-1', family_id: 'regression', algorithm_id: 'ridge-regression', method: 'regression', claim_type: 'predictive', estimand_or_objective: 'conditional mean', candidate_families: ['regression', 'classification'], baseline: 'mean', variables: { target: 'y', features: ['x'] }, equations_or_algorithm: ['fit', 'predict'], assumptions: ['stable sampling'], data_interface: { input: 'inputs/data.csv', split: 'group' }, solver_or_training: { seed: 2025, stopping: 'closed form' }, validation_tests: ['holdout'], failure_modes: ['shift'], fallback: 'linear', paper_outputs: ['metrics', 'residual figure'] }] },
     'work/01_analysis/validation_plan.yaml': { schema_version: 1, checks: [{ subproblem_id: 'sp-1', method: 'holdout' }] },
     'work/01_analysis/figure_plan.yaml': { schema_version: 1, figures: [{ id: 'fig-1', claim: 'comparison' }] },
     'work/01_analysis/literature/evidence_map.yaml': { schema_version: 1, evidence: [{ id: 'lit-1', claim_supported: 'supported', status: 'verified', role: 'method_origin', metadata: { title: 'Paper', year: 2025, doi: '10.1000/verified' }, verification: { service: 'Crossref', checked_fields: ['title', 'year', 'doi'] } }] },
@@ -57,6 +57,10 @@ test('quality gates reject slogan-only model, literature, and figure contracts',
   assert.equal(validateStructuredArtifactSchema('work/01_analysis/model_contract.yaml', {
     schema_version: 1,
     models: [{ subproblem_id: 'sp-1', method: 'advanced model' }],
+  }), false);
+  assert.equal(validateStructuredArtifactSchema('work/01_analysis/model_contract.yaml', {
+    schema_version: 1,
+    models: [{ subproblem_id: 'sp-1', family_id: 'magic-ai', algorithm_id: 'advanced-model', method: 'advanced model', claim_type: 'predictive', estimand_or_objective: 'score', candidate_families: ['magic-ai', 'regression'], baseline: 'mean', variables: ['x'], equations_or_algorithm: ['fit'], assumptions: ['none'], data_interface: ['data'], solver_or_training: ['run'], validation_tests: ['score'], failure_modes: ['shift'], fallback: 'mean', paper_outputs: ['score'] }],
   }), false);
   assert.equal(validateStructuredArtifactSchema('work/01_analysis/literature/evidence_map.yaml', {
     schema_version: 1,

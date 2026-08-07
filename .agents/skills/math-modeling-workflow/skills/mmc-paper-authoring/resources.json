@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "scripts/generate_paper_scaffold.py": {
+      "title": "Independent paper scaffold generator",
+      "summary": "Generate an original generic, CUMCM-oriented, or MCM-oriented LaTeX fallback with dynamic subproblem sections, contest metadata, and evidence anchors.",
+      "problemFamilies": ["all"],
+      "allowedStages": ["paper"],
+      "required": true
+    }
+  }
+}

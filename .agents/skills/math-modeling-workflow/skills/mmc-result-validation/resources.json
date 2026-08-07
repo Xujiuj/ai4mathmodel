@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "scripts/validate_results.py": {
+      "title": "Family-specific result validator",
+      "summary": "Run rolling-origin, feasibility and gap, ODE convergence, Monte Carlo precision, and rank-reversal checks from a JSON contract.",
+      "problemFamilies": ["ranking", "forecasting", "optimization", "simulation", "dynamics"],
+      "allowedStages": ["solving", "review"],
+      "required": true
+    }
+  }
+}

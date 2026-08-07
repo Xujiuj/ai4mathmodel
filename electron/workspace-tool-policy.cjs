@@ -27,7 +27,7 @@ function assertWorkspaceMutationPath(stage, value) {
 }
 
 function workspaceToolsForExecution(readOnly, stage = '', researchEnabled = false) {
-  const blocked = new Set(readOnly ? ['write_workspace_file', 'run_python', 'compile_paper'] : []);
+  const blocked = new Set(readOnly ? ['write_workspace_file', 'run_python', 'run_builtin_recipe', 'compile_paper'] : []);
   const researchOptIn = researchEnabled === true
     || researchEnabled?.researchEnabled === true;
   if (stage === 'analysis') blocked.add('run_python');

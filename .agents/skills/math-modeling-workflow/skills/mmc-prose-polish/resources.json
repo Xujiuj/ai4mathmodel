@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "scripts/paper_lint.py": {
+      "title": "Argument and preservation linter",
+      "summary": "Locate overclaims and verify that revision preserves numbers, units, citation keys, equation labels, and cross-references.",
+      "problemFamilies": ["all"],
+      "allowedStages": ["paper", "review"],
+      "required": true
+    }
+  }
+}

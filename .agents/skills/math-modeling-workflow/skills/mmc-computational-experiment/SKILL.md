@@ -9,6 +9,10 @@ Produce real, reproducible results for each approved subproblem.
 
 ## Execution discipline
 
+- Call `list_skill_resources` for the active stage and problem family before writing custom utilities.
+- Run `recipe-profile-dataset` during analysis or solving before selecting columns, splits, or preprocessing.
+- Run `recipe-modeling-recipes` for its supported deterministic operation before reimplementing it; persist the JSON output and execution receipt.
+- Treat a built-in recipe as a checked primitive, not as evidence that the surrounding model choice is valid.
 - Read the intake, model, and validation contracts before coding.
 - Implement subproblems in dependency order and keep their stable IDs.
 - Use one validated data-loading path; never overwrite raw inputs.
@@ -44,4 +48,5 @@ Produce real, reproducible results for each approved subproblem.
 - Re-running from declared inputs reproduces values within stated tolerance.
 - Failures and method deviations are explicit rather than hidden.
 
-Read [references/result-contract.md](references/result-contract.md) for result fields.
+Read [references/result-contract.md](references/result-contract.md) for result fields and
+[references/experiment-recipes.md](references/experiment-recipes.md) for operation contracts.

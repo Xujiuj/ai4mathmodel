@@ -221,7 +221,7 @@ test('desktop Python execution fails closed instead of embedding an unguarded fa
   assert.doesNotMatch(mainSource, /PYTHON_WORKSPACE_RUNNER|\['-c',\s*PYTHON_WORKSPACE_RUNNER/);
   assert.match(mainSource, /!fs\.existsSync\(guardScan\)\s*\|\|\s*!fs\.existsSync\(guardEntry\)/);
   assert.match(mainSource, /error:\s*'PYTHON_SANDBOX_UNAVAILABLE'/);
-  assert.match(mainSource, /runPythonProgram\(root,\s*\[guardEntry,\s*target\]/);
+  assert.match(mainSource, /runPythonProgram\(root,\s*\[guardEntry,\s*target(?:,\s*\.\.\.argumentsList)?\]/);
 });
 
 test('runtime boundary permits socket construction only when explicitly enabled', async (context) => {

@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "scripts/publication_plots.py": {
+      "title": "Publication figure engine",
+      "summary": "Render claim-driven figures from declared data and export PDF, SVG, PNG, plotted data, manifest, and QA evidence.",
+      "problemFamilies": ["all"],
+      "allowedStages": ["solving", "paper", "review"],
+      "required": true
+    }
+  }
+}

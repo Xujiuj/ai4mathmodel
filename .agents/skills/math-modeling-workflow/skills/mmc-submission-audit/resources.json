@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "scripts/release_audit.py": {
+      "title": "Submission release auditor",
+      "summary": "Audit LaTeX or Typst dependencies, typed numeric/figure/DOI evidence, bibliography, placeholders, and release hashes with deterministic exit states.",
+      "problemFamilies": ["all"],
+      "allowedStages": ["review"],
+      "required": true
+    }
+  }
+}

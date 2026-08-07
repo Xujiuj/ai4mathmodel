@@ -37,3 +37,12 @@ Advise the paper author without becoming a second owner of the manuscript source
 - Persist `schema_version`, decision, structured findings, overclaims, and unresolved terminology even when the lists are empty.
 
 Read [references/prose-rubric.md](references/prose-rubric.md) for section responsibilities and severity.
+
+## Deterministic pre-review
+
+Run `scripts/paper_lint.py --root work/03_paper --output
+work/03_paper/prose_lint.json` before stylistic review. Add `--baseline` with the
+previous accepted source to detect changed numbers, units, citation keys, and
+labels. Resolve `FAIL` findings before polishing; reconcile `REVIEW` findings with
+the evidence manifest instead of silently changing prose. The conservation rules
+and JSON schema are defined in `references/prose-lint-contract.md`.

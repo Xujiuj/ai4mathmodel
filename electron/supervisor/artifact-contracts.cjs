@@ -113,6 +113,11 @@ function analysisSubproblems(contract) {
   return Array.isArray(contract?.subproblems) ? contract.subproblems : [];
 }
 
+const PROBLEM_FAMILY_IDS = new Set([
+  'ranking', 'forecasting', 'regression', 'classification', 'clustering',
+  'optimization', 'simulation', 'dynamics', 'network', 'spatial', 'text',
+]);
+
 function validateSubproblemsContract(contract) {
   if (!hasContractVersion(contract)) {
     return failure('SUBPROBLEMS_SCHEMA_VERSION_INVALID', `subproblems.yaml must use schema_version ${ARTIFACT_CONTRACT_VERSION}.`);
@@ -133,6 +138,12 @@ function validateSubproblemsContract(contract) {
     ids.add(subproblem.id);
     if (!isNonEmptyText(subproblem.question) || !isNonEmptyText(subproblem.primary_method)) {
       return failure('SUBPROBLEMS_DESCRIPTION_INCOMPLETE', `Subproblem ${subproblem.id} needs a question and primary_method.`);
+    }
+    if (subproblem.problem_families !== undefined
+      && (!Array.isArray(subproblem.problem_families)
+        || subproblem.problem_families.length === 0
+        || subproblem.problem_families.some((family) => !PROBLEM_FAMILY_IDS.has(family)))) {
+      return failure('SUBPROBLEMS_PROBLEM_FAMILY_INVALID', `Subproblem ${subproblem.id} contains an unsupported problem_families value.`);
     }
     if (!isNonEmptyTextList(subproblem.inputs)
       || !isNonEmptyTextList(subproblem.outputs)

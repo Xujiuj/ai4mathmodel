@@ -52,6 +52,12 @@ const { runDirectAgent } = require('./supervisor/direct-provider.cjs');
 const { searchScholarlySources } = require('./supervisor/research.cjs');
 const { assertWorkspaceMutationPath, workspaceToolsForExecution } = require('./workspace-tool-policy.cjs');
 const { stagePrompt } = require('./supervisor/playbooks.cjs');
+const { getSkillResource, listSkillResources } = require('./supervisor/agent-skills-loader.cjs');
+const {
+  assertRecipeArguments,
+  createExecutionReceipt,
+  stageRecipePaths,
+} = require('./supervisor/builtin-recipes.cjs');
 const { hostedEndpoints, trustedLocalDevUrl } = require('./hosted/endpoints.cjs');
 const { installHostedCertificateVerifier, registerHostedCertificatePin } = require('./hosted/tls-pinning.cjs');
 const { createHostedSession } = require('./hosted/session.cjs');
@@ -1103,7 +1109,7 @@ async function prepareAnalysisProblemSource(root) {
   return { ok: true, path: relative.replaceAll('\\', '/'), count: sourceFiles.length };
 }
 
-async function runAgentPython(root, requestedPath, timeoutSeconds = 180) {
+async function runAgentPython(root, requestedPath, timeoutSeconds = 180, argumentsList = [], options = {}) {
   const { relative, target, stage } = await resolveAgentWorkspacePath(root, requestedPath);
   if (!relative.startsWith('work/') || path.extname(target).toLowerCase() !== '.py') throw agentToolError('PYTHON_PATH_RESTRICTED');
   const source = await readTextFile(target);
@@ -1122,15 +1128,47 @@ async function runAgentPython(root, requestedPath, timeoutSeconds = 180) {
   const stageRoot = stage && runner?.stagingRunId
     ? stagingRedirectTarget(root, runner.stagingRunId, `work/${stage.dir}`)
     : (stage ? path.join(root, 'work', stage.dir) : root);
-  const result = await runPythonProgram(root, [guardEntry, target], { stage: 'python', role: 'tool' }, timeoutMs, {
+  const result = await runPythonProgram(root, [guardEntry, target, ...argumentsList], { stage: 'python', role: 'tool' }, timeoutMs, {
     PROJECT_ROOT: root,
     ALLOW_NETWORK: allowNetwork ? '1' : '0',
     WORKSPACE_STAGE_ROOT: stageRoot,
-    WORKSPACE_CWD: path.dirname(target),
+    WORKSPACE_CWD: options.cwd || path.dirname(target),
   });
   return result.ok
     ? { ok: true, path: relative, output: result.output }
     : { ok: false, error: result.timedOut ? 'PYTHON_TIMEOUT' : 'PYTHON_EXECUTION_FAILED', output: result.output };
+}
+
+async function runBuiltinRecipe(root, stage, input = {}) {
+  const resource = getSkillResource(input.resource_id);
+  if (resource.kind !== 'recipe' || resource.language !== 'python' || !resource.entrypoint) {
+    throw agentToolError('BUILTIN_RECIPE_NOT_EXECUTABLE');
+  }
+  if (!resource.allowedStages.includes(stage)) throw agentToolError('BUILTIN_RECIPE_STAGE_RESTRICTED');
+  const argumentsList = assertRecipeArguments(resource, input.arguments, stage);
+  const paths = stageRecipePaths(stage, resource);
+  const scriptPath = assertWorkspaceMutationPath(stage, paths.script);
+  const receiptPath = assertWorkspaceMutationPath(stage, paths.receipt);
+  const startedAt = new Date().toISOString();
+  await writeAgentWorkspaceFile(root, scriptPath, resource.executionSource);
+  let result;
+  try {
+    result = await runAgentPython(root, scriptPath, input.timeout_seconds, argumentsList, { cwd: root });
+  } catch (error) {
+    result = { ok: false, error: error?.code || 'BUILTIN_RECIPE_FAILED', output: String(error?.message || '') };
+  } finally {
+    const resolved = await resolveAgentWorkspacePath(root, scriptPath, { writable: true, allowMissing: true }).catch(() => null);
+    if (resolved?.target) await fsp.rm(resolved.target, { force: true }).catch(() => {});
+  }
+  const receipt = createExecutionReceipt({
+    resource,
+    arguments: argumentsList,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    result,
+  });
+  await writeAgentWorkspaceFile(root, receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  return { ...result, resourceId: resource.id, receipt: receiptPath };
 }
 
 function latexArguments(compiler, paperDirectory, entry) {
@@ -1240,7 +1278,7 @@ function directTaskPrompt(stage) {
 
 function createAgentToolExecutor(root, { settings, readOnly = false, stage = '' } = {}) {
   return async ({ name, input = {} }) => {
-    if (readOnly && ['write_workspace_file', 'run_python', 'compile_paper'].includes(name)) return { ok: false, error: 'TOOL_READ_ONLY' };
+    if (readOnly && ['write_workspace_file', 'run_python', 'run_builtin_recipe', 'compile_paper'].includes(name)) return { ok: false, error: 'TOOL_READ_ONLY' };
     if (name === 'list_workspace_files') return listAgentWorkspaceFiles(root, input.path || 'inputs', input.max_depth);
     if (name === 'read_workspace_file') return readAgentWorkspaceFile(root, input.path, input.max_chars);
     if (name === 'inspect_spreadsheet') {
@@ -1249,12 +1287,31 @@ function createAgentToolExecutor(root, { settings, readOnly = false, stage = '' 
       return { ok: true, path: relative, preview };
     }
     if (name === 'inspect_document') return inspectAgentDocument(root, input.path);
+    if (name === 'list_skill_resources') {
+      return {
+        ok: true,
+        resources: listSkillResources({
+          stage,
+          kind: input.kind,
+          problemFamilies: input.problem_families,
+        }),
+      };
+    }
+    if (name === 'read_skill_reference') {
+      const resource = getSkillResource(input.resource_id);
+      if (!resource.allowedStages.includes(stage) || resource.kind === 'recipe') {
+        return { ok: false, error: 'SKILL_RESOURCE_READ_RESTRICTED' };
+      }
+      const maxChars = Math.max(1_000, Math.min(Number(input.max_chars) || 12_000, 24_000));
+      return { ok: true, resource: { id: resource.id, title: resource.title, kind: resource.kind, content: resource.content.slice(0, maxChars) } };
+    }
     if (name === 'write_workspace_file') {
       return writeAgentWorkspaceFile(root, assertWorkspaceMutationPath(stage, input.path), input.content);
     }
     if (name === 'run_python') {
       return runAgentPython(root, assertWorkspaceMutationPath(stage, input.path), input.timeout_seconds);
     }
+    if (name === 'run_builtin_recipe') return runBuiltinRecipe(root, stage, input);
     if (name === 'compile_paper') {
       const result = await compilePaper(root, { stage: 'compile', role: 'tool' }, { waitForExit: true });
       return { ok: result.code === 0, code: result.code, output: `${result.stdout || ''}${result.stderr || ''}`.slice(-16_000) };

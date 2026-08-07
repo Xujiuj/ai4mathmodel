@@ -1,5 +1,7 @@
-const SCHEMA_VERSION = 2;
-const BUNDLE_VERSION = '3';
+const crypto = require('node:crypto');
+
+const SCHEMA_VERSION = 3;
+const BUNDLE_VERSION = '4';
 
 const REQUIRED_SOURCE_IDS = Object.freeze([
   'mmc-workflow-orchestrator',
@@ -12,6 +14,16 @@ const REQUIRED_SOURCE_IDS = Object.freeze([
   'mmc-paper-authoring',
   'mmc-prose-polish',
   'mmc-submission-audit',
+]);
+const REQUIRED_RECIPE_IDS = Object.freeze([
+  'mmc-literature-evidence:recipe-literature-tools',
+  'mmc-computational-experiment:recipe-modeling-recipes',
+  'mmc-computational-experiment:recipe-profile-dataset',
+  'mmc-result-validation:recipe-validate-results',
+  'mmc-scientific-visualization:recipe-publication-plots',
+  'mmc-paper-authoring:recipe-generate-paper-scaffold',
+  'mmc-prose-polish:recipe-paper-lint',
+  'mmc-submission-audit:recipe-release-audit',
 ]);
 
 const STAGE_SKILL_IDS = Object.freeze({
@@ -52,6 +64,51 @@ function sameArray(actual, expected) {
     && actual.every((value, index) => value === expected[index]);
 }
 
+function sha256(value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function validSchema(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && value.type;
+}
+
+function validModule(module) {
+  const kinds = new Set(['procedure', 'reference', 'recipe', 'template']);
+  const languages = new Set(['markdown', 'python', 'latex', 'typst', 'text']);
+  const base = typeof module?.id === 'string'
+    && REQUIRED_SOURCE_IDS.includes(module.skillId)
+    && typeof module.title === 'string'
+    && kinds.has(module.kind)
+    && languages.has(module.language)
+    && typeof module.entrypoint === 'boolean'
+    && Array.isArray(module.allowedStages)
+    && module.allowedStages.length > 0
+    && module.allowedStages.every((stage) => Object.hasOwn(STAGE_SKILL_IDS, stage))
+    && Array.isArray(module.problemFamilies)
+    && module.problemFamilies.length > 0
+    && module.problemFamilies.every((family) => typeof family === 'string' && family.length > 0)
+    && typeof module.content === 'string'
+    && module.content.length >= 80
+    && /^[a-f0-9]{64}$/.test(module.sha256 || '')
+    && /^[a-f0-9]{64}$/.test(module.contentSha256 || '')
+    && module.contentSha256 === sha256(module.content);
+  if (!base) return false;
+  if (module.kind !== 'recipe') {
+    return module.entrypoint === false
+      && module.executionSource === undefined
+      && module.executionSha256 === undefined
+      && module.sha256 === module.contentSha256;
+  }
+  return module.language === 'python'
+    && module.entrypoint === true
+    && validSchema(module.argumentSchema)
+    && validSchema(module.outputSchema)
+    && typeof module.executionSource === 'string'
+    && module.executionSource.length >= 80
+    && module.executionSha256 === module.sha256
+    && module.executionSha256 === sha256(module.executionSource);
+}
+
 function assertBundleStructure(value, {
   code = 'AGENT_SKILL_BUNDLE_INVALID',
   message = 'Agent skill bundle structure is invalid.',
@@ -65,12 +122,8 @@ function assertBundleStructure(value, {
     && sameArray(sourceIds, REQUIRED_SOURCE_IDS)
     && modules.length >= REQUIRED_SOURCE_IDS.length * 2
     && new Set(moduleIds).size === moduleIds.length
-    && modules.every((module) => typeof module?.id === 'string'
-      && REQUIRED_SOURCE_IDS.includes(module.skillId)
-      && typeof module.title === 'string'
-      && typeof module.content === 'string'
-      && module.content.length >= 80
-      && /^[a-f0-9]{64}$/.test(module.sha256 || ''))
+    && modules.every(validModule)
+    && REQUIRED_RECIPE_IDS.every((id) => moduleIds.includes(id))
     && sameArray(stageNames, Object.keys(STAGE_SKILL_IDS));
 
   for (const [stage, expectedIds] of Object.entries(STAGE_SKILL_IDS)) {
@@ -97,6 +150,7 @@ function assertBundleStructure(value, {
 
 module.exports = {
   BUNDLE_VERSION,
+  REQUIRED_RECIPE_IDS,
   REQUIRED_SOURCE_IDS,
   SCHEMA_VERSION,
   STAGE_SKILL_IDS,

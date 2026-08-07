@@ -1,0 +1,25 @@
+{
+  "resources": {
+    "references/model-contract.md": {
+      "title": "Model contract schema",
+      "summary": "Define stable model identifiers, equations, interfaces, assumptions, validation, failure signals, and fallbacks.",
+      "problemFamilies": ["all"],
+      "allowedStages": ["analysis"],
+      "required": true
+    },
+    "references/model-family-catalog.md": {
+      "title": "Mathematical model family catalog",
+      "summary": "Select and reject evaluation, prediction, forecasting, optimization, dynamics, simulation, graph, spatial, and text model families.",
+      "problemFamilies": ["ranking", "forecasting", "regression", "classification", "clustering", "optimization", "simulation", "dynamics", "network", "spatial", "text"],
+      "allowedStages": ["analysis"],
+      "required": true
+    },
+    "references/algorithm-cards.md": {
+      "title": "Implementation algorithm cards",
+      "summary": "Turn selected model families into equations, algorithm steps, diagnostics, failure signals, and bounded paper claims.",
+      "problemFamilies": ["ranking", "forecasting", "regression", "classification", "clustering", "optimization", "simulation", "dynamics", "network", "spatial", "text"],
+      "allowedStages": ["analysis", "solving"],
+      "required": true
+    }
+  }
+}
