@@ -1,9 +1,10 @@
-import { CreditCard, LogOut, RefreshCw, Wallet } from 'lucide-react';
+import { Activity, CreditCard, LogOut, RefreshCw, Wallet } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { desktopApi } from '../api.js';
 import { CommandButton } from './Shell.jsx';
 
 function formatAmount(value, currency = 'CNY') {
+  if (String(currency).toUpperCase() === 'PTS') return `${Math.round(Number(value || 0)).toLocaleString('zh-CN')} 积分`;
   const symbol = currency === 'CNY' ? '¥' : `${currency} `;
   return `${symbol}${Number(value || 0).toFixed(2)}`;
 }
@@ -11,6 +12,7 @@ function formatAmount(value, currency = 'CNY') {
 export function AccountPanel({ tiers, activeTiers, onTierChange }) {
   const [state, setState] = useState({ status: 'loading', configured: false, signedIn: false });
   const [credentials, setCredentials] = useState({ email: '', password: '' });
+  const [registering, setRegistering] = useState(false);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -60,18 +62,38 @@ export function AccountPanel({ tiers, activeTiers, onTierChange }) {
   if (!state.signedIn) {
     return (
       <section className="account-panel">
-        <div className="settings-section-title"><div><h3>登录托管账户</h3></div></div>
+        <div className="settings-section-title"><div><h3>{registering ? '注册托管账户' : '登录托管账户'}</h3></div><span className={`account-service-status ${state.service?.available ? 'online' : 'offline'}`}><Activity size={12} />{state.service?.available ? '服务正常' : '服务不可用'}</span></div>
         <form
           className="account-login"
           onSubmit={(event) => {
             event.preventDefault();
-            run(() => desktopApi.loginAccount(credentials.email, credentials.password), '登录失败。');
+            run(
+              () => registering
+                ? desktopApi.registerAccount(credentials.email, credentials.password)
+                : desktopApi.loginAccount(credentials.email, credentials.password),
+              registering ? '注册失败。' : '登录失败。',
+            );
           }}
         >
           <label><span>账户邮箱</span><input type="email" autoComplete="username" value={credentials.email} onChange={(event) => setCredentials((current) => ({ ...current, email: event.target.value }))} /></label>
-          <label><span>密码</span><input type="password" autoComplete="current-password" value={credentials.password} onChange={(event) => setCredentials((current) => ({ ...current, password: event.target.value }))} /></label>
-          <CommandButton type="submit" tone="primary" disabled={busy || !credentials.email || !credentials.password}>{busy ? '登录中' : '登录'}</CommandButton>
+          <label><span>密码</span><input type="password" minLength={registering ? 12 : undefined} autoComplete={registering ? 'new-password' : 'current-password'} value={credentials.password} onChange={(event) => setCredentials((current) => ({ ...current, password: event.target.value }))} /></label>
+          <CommandButton type="submit" tone="primary" disabled={busy || state.service?.available === false || !credentials.email || !credentials.password || (registering && credentials.password.length < 12)}>{busy ? (registering ? '注册中' : '登录中') : (registering ? '注册并登录' : '登录')}</CommandButton>
+          <CommandButton type="button" disabled={busy} onClick={() => { setRegistering((current) => !current); setMessage(''); }}>{registering ? '已有账户，登录' : '新用户注册'}</CommandButton>
         </form>
+        <span className="settings-save-message" role="status">{message}</span>
+      </section>
+    );
+  }
+
+  if (state.service?.available === false) {
+    return (
+      <section className="account-panel">
+        <div className="settings-section-title"><div><h3>账户</h3></div><span className="settings-status-line">账户已登录</span></div>
+        <div className="account-service-status offline"><Activity size={12} />托管服务不可用</div>
+        <div className="account-actions">
+          <CommandButton icon={RefreshCw} disabled={busy} onClick={() => run(async () => {}, '刷新失败。')}>重试连接</CommandButton>
+          <CommandButton icon={LogOut} disabled={busy} onClick={() => run(() => desktopApi.logoutAccount(), '退出失败。')}>退出登录</CommandButton>
+        </div>
         <span className="settings-save-message" role="status">{message}</span>
       </section>
     );
@@ -84,8 +106,9 @@ export function AccountPanel({ tiers, activeTiers, onTierChange }) {
     <section className="account-panel">
       <div className="settings-section-title">
         <div><h3>账户</h3></div>
-        <span className="settings-status-line">{account.email}</span>
+        <span className="settings-status-line">{account.email || '账户已登录'}</span>
       </div>
+      <div className={`account-service-status ${state.service?.available ? 'online' : 'offline'}`}><Activity size={12} />{state.service?.available ? '托管服务正常' : '托管服务不可用'}</div>
       <div className="account-balance">
         <Wallet size={16} />
         <strong>{formatAmount(account.balance, account.currency)}</strong>
@@ -95,7 +118,7 @@ export function AccountPanel({ tiers, activeTiers, onTierChange }) {
         <CommandButton
           icon={CreditCard}
           tone="primary"
-          disabled={busy || !state.topUpEnabled}
+          disabled={busy || !state.topUpEnabled || state.service?.available === false}
           title={state.topUpEnabled ? '打开充值页面' : '支付通道尚未配置'}
           onClick={() => run(() => desktopApi.openTopUp(), '无法打开充值页面。')}
         >充值</CommandButton>
@@ -105,11 +128,17 @@ export function AccountPanel({ tiers, activeTiers, onTierChange }) {
       {!state.topUpEnabled ? <p className="account-hint">支付通道尚未配置，暂不支持在线充值。</p> : null}
       {options.length ? (
         <div className="account-tiers">
-          {[['reasoning', '推理与代码'], ['writing', '文本']].map(([key, label]) => (
+          {[
+            ['coordinator', 'reasoning'],
+            ['modeler', 'reasoning'],
+            ['coder', 'coding'],
+            ['writer', 'writing'],
+            ['image', 'image'],
+          ].map(([key, legacyKey]) => (
             <label key={key}>
-              <span>{label}档位</span>
+              <span>{key}档位</span>
               <select
-                value={activeTiers?.[key] || state.defaultTiers?.[key] || ''}
+                value={activeTiers?.[key] || activeTiers?.[legacyKey] || state.defaultTiers?.[key] || state.defaultTiers?.[legacyKey] || ''}
                 disabled={!onTierChange}
                 onChange={(event) => onTierChange?.(key, event.target.value)}
               >

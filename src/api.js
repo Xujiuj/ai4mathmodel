@@ -1,16 +1,22 @@
 const desktopUnavailable = () => Promise.reject(new Error('此功能需要在数模工坊桌面端中运行。'));
+export const APP_VERSION = globalThis.__MATH_MODEL_APP_VERSION__ || 'development';
 
 function browserPreviewApi() {
   return {
-    appInfo: async () => ({ version: '0.1.0', platform: 'browser-preview', electron: null, desktopRuntime: false }),
+    appInfo: async () => ({ version: APP_VERSION, platform: 'browser-preview', electron: null, desktopRuntime: false }),
     listProjects: async () => [],
     getSettings: async () => ({}),
     getAccount: async () => ({ configured: false, signedIn: false }),
     activeRun: async () => null,
     activeRuns: async () => [],
+    listRuns: async () => [],
+    runHistory: async () => ({ events: [], nextAfterSeq: 0, hasMore: false }),
+    resumeRun: async () => ({ status: 'paused', resumable: false }),
+    replayRun: async () => ({ status: 'paused', resumable: false }),
     listCheckpoints: async () => [],
     onRunEvent: () => () => {},
     onUpdaterEvent: () => () => {},
+    onComponentEvent: () => () => {},
     addProject: desktopUnavailable,
     createProject: desktopUnavailable,
     removeProject: desktopUnavailable,
@@ -35,10 +41,12 @@ function browserPreviewApi() {
     downloadUpdate: desktopUnavailable,
     installUpdate: desktopUnavailable,
     listComponentUpdates: desktopUnavailable,
+    installComponentUpdate: desktopUnavailable,
     listModels: desktopUnavailable,
     importLocalModelConfig: desktopUnavailable,
     saveSettings: desktopUnavailable,
     loginAccount: desktopUnavailable,
+    registerAccount: desktopUnavailable,
     logoutAccount: desktopUnavailable,
     openTopUp: desktopUnavailable,
   };

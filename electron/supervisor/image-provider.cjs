@@ -110,16 +110,18 @@ function isPng(buffer) {
   return buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 }
 
-async function responseBuffer(payload, fetchImpl, timeoutMs) {
+async function responseBuffer(payload, fetchImpl, timeoutMs, assetOrigin) {
   const item = payload?.data?.[0] || payload?.images?.[0] || payload?.output?.[0] || {};
   const encoded = typeof item === 'string' ? item : item.b64_json || item.base64 || item.image_base64;
   if (encoded) return decodeBase64Image(encoded);
   const remoteUrl = item.url || payload?.url;
   if (!remoteUrl) throw new Error('IMAGE_RESPONSE_INVALID');
   const target = new URL(remoteUrl);
-  if (target.protocol !== 'https:' && !(target.protocol === 'http:' && isLocalHost(target.hostname))) throw new Error('IMAGE_ASSET_URL_REJECTED');
+  const expectedOrigin = new URL(assetOrigin).origin;
+  if (target.origin !== expectedOrigin || target.username || target.password) throw new Error('IMAGE_ASSET_URL_REJECTED');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let requestId = '';
   try {
     const response = await fetchImpl(target, { redirect: 'error', signal: controller.signal });
     if (!response.ok) throw new Error(`IMAGE_ASSET_HTTP_${response.status}`);
@@ -133,7 +135,7 @@ async function responseBuffer(payload, fetchImpl, timeoutMs) {
   }
 }
 
-async function requestImage({ endpoint, apiKey, model, request, fetchImpl, timeoutMs, responseFormat = 'url' }) {
+async function requestImage({ endpoint, apiKey, model, request, pipelineId = '', fetchImpl, timeoutMs, responseFormat = 'b64_json' }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -142,6 +144,7 @@ async function requestImage({ endpoint, apiKey, model, request, fetchImpl, timeo
       headers: {
         'Content-Type': 'application/json',
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        ...(pipelineId ? { 'X-Pipeline-Id': String(pipelineId).slice(0, 160) } : {}),
       },
       redirect: 'error',
       signal: controller.signal,
@@ -153,13 +156,16 @@ async function requestImage({ endpoint, apiKey, model, request, fetchImpl, timeo
         prompt: `生成可直接用于数学建模论文的中文科学示意图。构图由内容决定，不添加图题、图注、解释段落、水印或风格说明。图中文字仅保留必要的简洁中文标签。内容：${request.prompt}`,
       }),
     });
+    requestId = String(response.headers?.get?.('x-request-id') || '')
+      .replace(/[^\x20-\x7e]/g, '')
+      .slice(0, 160);
     if (!response.ok) throw new Error(`IMAGE_HTTP_${response.status}`);
     const length = Number(response.headers.get('content-length') || 0);
     if (length > MAX_IMAGE_BYTES * 2) throw new Error('IMAGE_RESPONSE_SIZE');
     const payload = await response.json();
-    const buffer = await responseBuffer(payload, fetchImpl, timeoutMs);
+    const buffer = await responseBuffer(payload, fetchImpl, timeoutMs, endpoint);
     if (!isPng(buffer)) throw new Error('IMAGE_NOT_PNG');
-    return buffer;
+    return { buffer, requestId };
   } finally {
     clearTimeout(timeout);
   }
@@ -170,9 +176,9 @@ function inside(parent, child) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-async function writeImage(root, relative, buffer) {
+async function writeImage(root, relative, buffer, { resolvePath } = {}) {
   const rootReal = await fsp.realpath(root);
-  const target = path.resolve(rootReal, ...relative.split('/'));
+  const target = resolvePath ? resolvePath(relative) : path.resolve(rootReal, ...relative.split('/'));
   const parent = path.dirname(target);
   await fsp.mkdir(parent, { recursive: true });
   const parentReal = await fsp.realpath(parent);
@@ -203,12 +209,14 @@ async function generateRequestedImages({
   apiKey = '',
   model,
   allowInsecureRemote = false,
+  resolvePath,
+  pipelineId = '',
   fetchImpl = globalThis.fetch,
   timeoutMs = REQUEST_TIMEOUT_MS,
   maxRequests = MAX_REQUESTS,
 }) {
   const requests = extractImageRequests(output, maxRequests);
-  const outcome = { requested: requests.length, generated: 0, failed: 0, artifactRefs: [], errors: [] };
+  const outcome = { requested: requests.length, generated: 0, failed: 0, artifactRefs: [], requestIds: [], errors: [] };
   if (!requests.length) return outcome;
   if (connection.protocol !== 'openai' || !connection.baseUrl || !(model || connection.model) || typeof fetchImpl !== 'function') {
     return { ...outcome, failed: requests.length, errors: requests.map((request) => ({ path: request.path, code: 'IMAGE_CONNECTION_UNSUPPORTED' })) };
@@ -221,7 +229,7 @@ async function generateRequestedImages({
     return { ...outcome, failed: requests.length, errors: requests.map((request) => ({ path: request.path, code: errorCode(error) })) };
   }
 
-  let responseFormat = 'url';
+  let responseFormat = 'b64_json';
   for (const request of requests) {
     try {
       const relative = safeRelativeTarget(stage, request.path);
@@ -230,21 +238,23 @@ async function generateRequestedImages({
         apiKey,
         model: model || connection.model,
         request,
+        pipelineId,
         fetchImpl,
         timeoutMs: Math.max(1_000, Math.min(Number(timeoutMs) || REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_MS)),
         responseFormat: format,
       });
-      let buffer;
+      let image;
       try {
-        buffer = await call(responseFormat);
+        image = await call(responseFormat);
       } catch (error) {
-        if (responseFormat !== 'url' || !FORMAT_FALLBACK_CODES.has(errorCode(error))) throw error;
-        responseFormat = 'b64_json';
-        buffer = await call(responseFormat);
+        if (responseFormat !== 'b64_json' || !FORMAT_FALLBACK_CODES.has(errorCode(error))) throw error;
+        responseFormat = 'url';
+        image = await call(responseFormat);
       }
-      await writeImage(root, relative, buffer);
+      await writeImage(root, relative, image.buffer, { resolvePath });
       outcome.generated += 1;
       outcome.artifactRefs.push(relative);
+      if (image.requestId && !outcome.requestIds.includes(image.requestId)) outcome.requestIds.push(image.requestId);
     } catch (error) {
       outcome.failed += 1;
       outcome.errors.push({ path: request.path, code: errorCode(error) });

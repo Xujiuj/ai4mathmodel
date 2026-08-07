@@ -1,0 +1,21 @@
+This product includes the following redistributable runtimes:
+
+Python 3.11.9
+Copyright Python Software Foundation
+Licensed under the Python Software Foundation License Version 2.
+https://www.python.org/
+
+Tectonic 0.15.0
+Copyright the Tectonic Project contributors
+Licensed under the MIT License.
+https://github.com/tectonic-typesetting/tectonic
+
+Fandol Chinese fonts 0.3
+Copyright 2012-2013 the Fandol team
+Distributed under the GNU General Public License, version 3, with the font
+embedding exception. The fonts are bundled under compatibility aliases for
+Chinese competition templates.
+https://ctan.org/pkg/fandol
+
+Python packages are distributed under their respective licenses. Package
+metadata and license files are retained with each installed distribution.

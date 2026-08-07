@@ -108,6 +108,7 @@ test('gateway limits repeated login attempts before they reach Sub2API', async (
     publicBaseUrl: 'https://gw.example.com',
     tokenSecret: 'token-secret-long-enough-for-login-limit-tests',
     keySecret: 'key-secret-long-enough-for-login-limit-tests',
+    imageEnabled: false,
     tiers: [],
     defaultTiers: {},
     sub2api: {
@@ -165,8 +166,9 @@ test('gateway queues model traffic, protects metrics, and drains on shutdown', a
     publicBaseUrl: 'https://gw.example.com',
     tokenSecret,
     keySecret,
-    tiers: [],
-    defaultTiers: {},
+    imageEnabled: false,
+    tiers: [{ id: 'standard', models: { modeler: 'operations-model' } }],
+    defaultTiers: { modeler: 'standard' },
     sub2api: {
       loginPath: '/api/v1/auth/login',
       profilePath: '/api/v1/user/profile',
@@ -232,6 +234,224 @@ test('gateway queues model traffic, protects metrics, and drains on shutdown', a
       event: 'gateway_shutdown_completed',
       drained: true,
     });
+  } finally {
+    if (gateway.listening) await new Promise((resolve) => gateway.close(resolve));
+    if (upstream.listening) await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test('gateway aborts model forwarding when the client disconnects and releases its lease once', async () => {
+  let requestCount = 0;
+  let firstStartedResolve;
+  let firstClosedResolve;
+  const firstStarted = new Promise((resolve) => { firstStartedResolve = resolve; });
+  const firstClosed = new Promise((resolve) => { firstClosedResolve = resolve; });
+  const upstream = http.createServer((request, response) => {
+    const requestNumber = ++requestCount;
+    request.once('close', () => {
+      if (requestNumber === 1) firstClosedResolve();
+    });
+    request.resume();
+    request.once('end', () => {
+      if (requestNumber === 1) {
+        firstStartedResolve();
+        response.writeHead(200, { 'Content-Type': 'application/json', 'X-Request-Id': 'model-disconnect' });
+        response.write('{"partial":');
+        return;
+      }
+      response.writeHead(200, { 'Content-Type': 'application/json', 'X-Request-Id': 'model-retry' });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamBase = await listen(upstream);
+  const tokenSecret = 'token-secret-long-enough-for-disconnect-tests';
+  const keySecret = 'key-secret-long-enough-for-disconnect-tests';
+  const gateway = createGateway({
+    upstream: upstreamBase,
+    portal: 'https://portal.example.com',
+    publicBaseUrl: 'https://gw.example.com',
+    tokenSecret,
+    keySecret,
+    imageEnabled: false,
+    tiers: [{ id: 'standard', models: { modeler: 'disconnect-model' } }],
+    defaultTiers: { modeler: 'standard' },
+    operations: { admission: { maxConcurrent: 1, maxQueued: 1 } },
+    sub2api: {
+      loginPath: '/api/v1/auth/login',
+      profilePath: '/api/v1/user/profile',
+      usagePath: '/api/v1/usage/dashboard/stats',
+      usageListPath: '/api/v1/usage',
+      apiKeysPath: '/api/v1/keys',
+    },
+    logger: () => {},
+  }, { expandPlaybook: () => 'server playbook' });
+  const base = await listen(gateway);
+  const token = sign({
+    exp: Math.floor(Date.now() / 1_000) + 60,
+    dev: 'disconnect-device',
+    k: sealKey('sk-upstream', keySecret),
+    c: sealKey('credential', keySecret),
+  }, tokenSecret);
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'X-Device-Id': 'disconnect-device',
+    'Content-Type': 'application/json',
+  };
+  const body = JSON.stringify({ messages: [{ role: 'system', content: playbookPlaceholder({ stage: 'analysis' }) }] });
+
+  try {
+    const firstClientResponse = new Promise((resolve, reject) => {
+      const client = http.request(`${base}/v1/chat/completions`, { method: 'POST', headers }, (response) => {
+        response.once('data', () => {
+          client.destroy();
+          resolve();
+        });
+        response.resume();
+        response.on('error', () => {});
+      });
+      client.on('error', (error) => {
+        if (error.code !== 'ECONNRESET') reject(error);
+      });
+      client.end(body);
+    });
+    await firstStarted;
+    await firstClientResponse;
+    await firstClosed;
+
+    const retry = await fetch(`${base}/v1/chat/completions`, { method: 'POST', headers, body });
+    assert.equal(retry.status, 200);
+    assert.deepEqual(await retry.json(), { ok: true });
+    assert.equal(requestCount, 2);
+  } finally {
+    if (gateway.listening) await new Promise((resolve) => gateway.close(resolve));
+    if (upstream.listening) await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test('gateway rejects a drip-fed model body and releases the admission lease', async () => {
+  let upstreamRequests = 0;
+  const upstream = http.createServer((request, response) => {
+    upstreamRequests += 1;
+    response.writeHead(200, { 'Content-Type': 'application/json', 'X-Request-Id': 'should-not-run' });
+    response.end('{"ok":true}');
+  });
+  const upstreamBase = await listen(upstream);
+  const tokenSecret = 'token-secret-long-enough-for-body-timeout-tests';
+  const keySecret = 'key-secret-long-enough-for-body-timeout-tests';
+  const gateway = createGateway({
+    upstream: upstreamBase,
+    portal: 'https://portal.example.com',
+    publicBaseUrl: 'https://gw.example.com',
+    tokenSecret,
+    keySecret,
+    imageEnabled: false,
+    requestBodyTimeoutMs: 1_000,
+    requestBodyInactivityTimeoutMs: 1_000,
+    tiers: [{ id: 'standard', models: { modeler: 'body-timeout-model' } }],
+    defaultTiers: { modeler: 'standard' },
+    sub2api: {
+      loginPath: '/api/v1/auth/login',
+      profilePath: '/api/v1/user/profile',
+      usagePath: '/api/v1/usage/dashboard/stats',
+      usageListPath: '/api/v1/usage',
+      apiKeysPath: '/api/v1/keys',
+    },
+    logger: () => {},
+  }, { expandPlaybook: () => 'server playbook' });
+  const base = await listen(gateway);
+  const token = sign({
+    exp: Math.floor(Date.now() / 1_000) + 60,
+    dev: 'body-device',
+    k: sealKey('sk-upstream', keySecret),
+    c: sealKey('credential', keySecret),
+  }, tokenSecret);
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const request = http.request(`${base}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-Device-Id': 'body-device',
+          'Content-Type': 'application/json',
+          'Transfer-Encoding': 'chunked',
+        },
+      }, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+      });
+      request.on('error', reject);
+      request.write('{"messages":[');
+      setTimeout(() => request.end(']}'), 1_200);
+    });
+    assert.equal(result.status, 408);
+    assert.match(result.body, /request body timeout/);
+    assert.equal(upstreamRequests, 0);
+  } finally {
+    if (gateway.listening) await new Promise((resolve) => gateway.close(resolve));
+    if (upstream.listening) await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test('gateway aggregates model rate limits across rotated device ids', async () => {
+  const started = [];
+  const replies = [];
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      started.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      replies.push(response);
+    });
+  });
+  const upstreamBase = await listen(upstream);
+  const tokenSecret = 'token-secret-long-enough-for-account-rate-tests';
+  const keySecret = 'key-secret-long-enough-for-account-rate-tests';
+  const gateway = createGateway({
+    upstream: upstreamBase,
+    portal: 'https://portal.example.com',
+    publicBaseUrl: 'https://gw.example.com',
+    tokenSecret,
+    keySecret,
+    imageEnabled: false,
+    tiers: [{ id: 'standard', models: { modeler: 'account-rate-model' } }],
+    defaultTiers: { modeler: 'standard' },
+    operations: { rateLimit: { maxRequests: 10 }, accountRateLimit: { maxRequests: 1 } },
+    sub2api: {
+      loginPath: '/api/v1/auth/login',
+      profilePath: '/api/v1/user/profile',
+      usagePath: '/api/v1/usage/dashboard/stats',
+      usageListPath: '/api/v1/usage',
+      apiKeysPath: '/api/v1/keys',
+    },
+    logger: () => {},
+  }, { expandPlaybook: () => 'server playbook' });
+  const base = await listen(gateway);
+  const body = JSON.stringify({ messages: [{ role: 'system', content: playbookPlaceholder({ stage: 'analysis' }) }] });
+  const makeToken = (deviceId) => sign({
+    exp: Math.floor(Date.now() / 1_000) + 60,
+    dev: deviceId,
+    k: sealKey('shared-account-key', keySecret),
+    c: sealKey('shared-account-credential', keySecret),
+  }, tokenSecret);
+  try {
+    const first = fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${makeToken('device-1')}`, 'X-Device-Id': 'device-1', 'Content-Type': 'application/json' },
+      body,
+    });
+    await waitFor(() => started.length === 1);
+    const rotated = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${makeToken('device-2')}`, 'X-Device-Id': 'device-2', 'Content-Type': 'application/json' },
+      body,
+    });
+    assert.equal(rotated.status, 429);
+    const reply = replies.shift();
+    reply.writeHead(200, { 'Content-Type': 'application/json', 'X-Request-Id': 'account-rate-request' });
+    reply.end('{"ok":true}');
+    assert.equal((await first).status, 200);
+    assert.equal(started.length, 1);
   } finally {
     if (gateway.listening) await new Promise((resolve) => gateway.close(resolve));
     if (upstream.listening) await new Promise((resolve) => upstream.close(resolve));

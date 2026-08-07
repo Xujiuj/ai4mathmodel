@@ -9,6 +9,47 @@ const STAGE_DIR_MAP = Object.freeze({
   review: '04_review',
 });
 
+const TRANSIENT_RENAME_CODES = new Set(['EBUSY', 'EPERM']);
+const RENAME_RETRY_DELAYS_MS = Object.freeze([40, 120, 240, 480, 800]);
+
+function wait(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function renameWithRetry(source, destination, {
+  rename = fsp.rename,
+  sleep = wait,
+  delays = RENAME_RETRY_DELAYS_MS,
+} = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(source, destination);
+      return;
+    } catch (error) {
+      const delay = delays[attempt];
+      if (!TRANSIENT_RENAME_CODES.has(error?.code) || delay == null) throw error;
+      await sleep(delay);
+    }
+  }
+}
+
+async function copyWithRetry(source, destination, {
+  copy = fsp.cp,
+  sleep = wait,
+  delays = RENAME_RETRY_DELAYS_MS,
+} = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await copy(source, destination, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const delay = delays[attempt];
+      if (!TRANSIENT_RENAME_CODES.has(error?.code) || delay == null) throw error;
+      await sleep(delay);
+    }
+  }
+}
+
 function stagingPath(root, runId, stage) {
   if (!STAGE_DIR_MAP[stage]) throw new Error(`Unknown stage: ${stage}`);
   return path.join(root, 'work', '.staging', runId, STAGE_DIR_MAP[stage]);
@@ -41,7 +82,13 @@ function stagingProjectView(root, runId) {
     const normalized = String(relative || '').replaceAll('\\', '/');
     for (const dir of Object.values(STAGE_DIR_MAP)) {
       if (normalized === `work/${dir}` || normalized.startsWith(`work/${dir}/`)) {
-        return path.join(root, 'work', '.staging', runId, normalized.slice('work/'.length));
+        const stagedDirectory = path.join(root, 'work', '.staging', runId, dir);
+        const staged = path.join(root, 'work', '.staging', runId, normalized.slice('work/'.length));
+        // Completed upstream stages may predate staging snapshots. Keep their
+        // committed artifacts visible while the current stage is still isolated.
+        // Once a stage has a staging directory, every path in that stage must
+        // remain isolated, including a newly-created output file.
+        return fs.existsSync(stagedDirectory) ? staged : path.join(root, relative);
       }
     }
     return path.join(root, relative);
@@ -61,9 +108,16 @@ async function commitStage(root, runId, stage, gateResult) {
   if (fs.existsSync(committed)) {
     const trash = trashPath(root, Date.now(), stage);
     await fsp.mkdir(path.dirname(trash), { recursive: true });
-    await fsp.rename(committed, trash);
+    // Windows may deny renaming a directory that another process is reading.
+    // A best-effort snapshot preserves rollback evidence without blocking publish.
+    await copyWithRetry(committed, trash).catch(() => {});
+    await copyWithRetry(staging, committed);
+  } else {
+    await copyWithRetry(staging, committed);
   }
-  await fsp.rename(staging, committed);
+  // Retain the run-local snapshot until the pipeline ends. Downstream tools
+  // compile and execute against this consistent view, while the committed copy
+  // remains the recoverable public artifact set.
   await fsp.writeFile(marker, JSON.stringify({
     runId,
     stage,
@@ -142,6 +196,8 @@ module.exports = {
   commitMarkerPath,
   projectView,
   stagingProjectView,
+  renameWithRetry,
+  copyWithRetry,
   commitStage,
   readCommitMarker,
   cleanOldTrash,

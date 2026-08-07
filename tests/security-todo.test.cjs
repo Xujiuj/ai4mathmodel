@@ -10,6 +10,8 @@ const {
   stagingPath,
   committedPath,
   stagingProjectView,
+  renameWithRetry,
+  copyWithRetry,
   commitStage,
   recoverProjectState,
   prepareStageStaging,
@@ -47,22 +49,132 @@ ${'详细论证与公式推导以及实验设计说明。'.repeat(400)}
 
 const PROBLEM_TEXT = `${'规范化赛题文本与约束条件说明。'.repeat(40)}\n`;
 
-test('staging commit moves artifacts and writes marker', async () => {
+const ANALYSIS_PDF = Buffer.concat([Buffer.from('%PDF-1.7\n'), Buffer.alloc(2048)]);
+
+const SUBPROBLEMS_YAML = [
+  'schema_version: 1',
+  'subproblems:',
+  '  - id: sp-1',
+  '    question: Complete the staged modeling task.',
+  '    inputs: [inputs/problem/statement.txt]',
+  '    outputs: [work/02_solving/sub_problem_1/results.yaml]',
+  '    depends_on: []',
+  '    primary_method: Validated mathematical modeling.',
+  '    validation_requirements: [Compare against a baseline.]',
+].join('\n');
+
+test('staging commit preserves the run snapshot and writes a committed marker', async () => {
   await withTempRoot(async (root) => {
     const runId = 'run-1';
     await prepareStageStaging(root, runId, 'analysis');
+    await fsp.mkdir(path.join(root, 'inputs', 'problem'), { recursive: true });
+    await fsp.writeFile(path.join(root, 'inputs', 'problem', 'statement.txt'), 'modeling problem', 'utf8');
     const staging = stagingPath(root, runId, 'analysis');
     await fsp.writeFile(path.join(staging, 'analysis.md'), ANALYSIS_MD, 'utf8');
     await fsp.writeFile(path.join(staging, 'problem_text.md'), PROBLEM_TEXT, 'utf8');
+    await fsp.writeFile(path.join(staging, 'analysis.pdf'), ANALYSIS_PDF);
+    await fsp.writeFile(path.join(staging, 'subproblems.yaml'), SUBPROBLEMS_YAML, 'utf8');
     const view = stagingProjectView(root, runId);
     const gate = await validateStageArtifacts(view, 'analysis');
     assert.equal(gate.ok, true, gate.reason || '');
     const result = await commitStage(root, runId, 'analysis', gate);
     assert.equal(result.committed, true);
     assert.ok(fs.existsSync(path.join(committedPath(root, 'analysis'), 'analysis.md')));
-    assert.ok(!fs.existsSync(staging));
+    assert.ok(fs.existsSync(staging));
     const marker = await readCommitMarker(root, 'analysis');
     assert.equal(marker.runId, runId);
+  });
+});
+
+test('staging project view falls back to committed upstream artifacts until a stage snapshot exists', async () => {
+  await withTempRoot(async (root) => {
+    const runId = 'run-view';
+    const committed = committedPath(root, 'analysis');
+    await fsp.mkdir(committed, { recursive: true });
+    await fsp.writeFile(path.join(committed, 'analysis.md'), 'committed analysis', 'utf8');
+    const view = stagingProjectView(root, runId);
+    assert.equal(view.resolvePath('work/01_analysis/analysis.md'), path.join(committed, 'analysis.md'));
+
+    await prepareStageStaging(root, runId, 'analysis');
+    assert.equal(
+      view.resolvePath('work/01_analysis/analysis.md'),
+      path.join(stagingPath(root, runId, 'analysis'), 'analysis.md'),
+    );
+    assert.equal(
+      view.resolvePath('work/01_analysis/analysis.pdf'),
+      path.join(stagingPath(root, runId, 'analysis'), 'analysis.pdf'),
+    );
+  });
+});
+
+test('staging rename retries transient filesystem locks before preserving atomic commit', async () => {
+  let calls = 0;
+  const sleeps = [];
+  await renameWithRetry('source', 'destination', {
+    rename: async () => {
+      calls += 1;
+      if (calls < 3) {
+        const error = new Error('temporary file lock');
+        error.code = 'EPERM';
+        throw error;
+      }
+    },
+    sleep: async (delay) => sleeps.push(delay),
+    delays: [1, 2],
+  });
+  assert.equal(calls, 3);
+  assert.deepEqual(sleeps, [1, 2]);
+});
+
+test('staging copy retries transient filesystem locks before publishing an existing stage', async () => {
+  let calls = 0;
+  const sleeps = [];
+  await copyWithRetry('source', 'destination', {
+    copy: async () => {
+      calls += 1;
+      if (calls < 3) {
+        const error = new Error('temporary file lock');
+        error.code = 'EPERM';
+        throw error;
+      }
+    },
+    sleep: async (delay) => sleeps.push(delay),
+    delays: [1, 2],
+  });
+  assert.equal(calls, 3);
+  assert.deepEqual(sleeps, [1, 2]);
+});
+
+test('staging commit updates an existing stage without renaming its live directory', async () => {
+  await withTempRoot(async (root) => {
+    const initialRun = 'run-existing';
+    const replacementRun = 'run-replacement';
+    const committed = committedPath(root, 'analysis');
+    await fsp.mkdir(committed, { recursive: true });
+    await fsp.writeFile(path.join(committed, 'analysis.md'), 'old analysis', 'utf8');
+    await fsp.writeFile(path.join(committed, 'problem_text.md'), 'old problem', 'utf8');
+
+    await prepareStageStaging(root, replacementRun, 'analysis');
+    await fsp.mkdir(path.join(root, 'inputs', 'problem'), { recursive: true });
+    await fsp.writeFile(path.join(root, 'inputs', 'problem', 'statement.txt'), 'modeling problem', 'utf8');
+    const staging = stagingPath(root, replacementRun, 'analysis');
+    await fsp.writeFile(path.join(staging, 'analysis.md'), ANALYSIS_MD, 'utf8');
+    await fsp.writeFile(path.join(staging, 'problem_text.md'), PROBLEM_TEXT, 'utf8');
+    await fsp.writeFile(path.join(staging, 'analysis.pdf'), ANALYSIS_PDF);
+    await fsp.writeFile(path.join(staging, 'subproblems.yaml'), SUBPROBLEMS_YAML, 'utf8');
+    const gate = await validateStageArtifacts(stagingProjectView(root, replacementRun), 'analysis');
+    assert.equal(gate.ok, true, gate.reason || '');
+
+    const result = await commitStage(root, replacementRun, 'analysis', gate);
+    assert.equal(result.committed, true);
+    assert.equal(await fsp.readFile(path.join(committed, 'analysis.md'), 'utf8'), ANALYSIS_MD);
+    assert.equal(fs.existsSync(staging), true);
+    const marker = await readCommitMarker(root, 'analysis');
+    assert.equal(marker.runId, replacementRun);
+    const trashEntries = await fsp.readdir(path.join(root, 'work', '.trash'));
+    const archived = path.join(root, 'work', '.trash', trashEntries[0], '01_analysis', 'analysis.md');
+    assert.equal(await fsp.readFile(archived, 'utf8'), 'old analysis');
+    assert.notEqual(initialRun, replacementRun);
   });
 });
 
@@ -166,4 +278,37 @@ test('AST scan rejects forbidden socket usage', () => {
   fs.unlinkSync(tmp);
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}${result.stdout}`, /Forbidden/);
+});
+
+test('sandbox executes staged scripts from their stage directory with scoped shared imports', async () => {
+  await withTempRoot(async (root) => {
+    const stageRoot = path.join(root, 'work', '.staging', 'run-python', '02_solving');
+    const scriptDirectory = path.join(stageRoot, 'sub_problem_1');
+    await fsp.mkdir(path.join(stageRoot, 'shared'), { recursive: true });
+    await fsp.mkdir(scriptDirectory, { recursive: true });
+    await fsp.writeFile(path.join(stageRoot, 'shared', '__init__.py'), '', 'utf8');
+    await fsp.writeFile(path.join(stageRoot, 'shared', 'constants.py'), 'VALUE = 17\n', 'utf8');
+    const script = path.join(scriptDirectory, 'solve.py');
+    await fsp.writeFile(script, [
+      'from pathlib import Path',
+      'from shared.constants import VALUE',
+      "Path('result.txt').write_text(str(VALUE), encoding='utf-8')",
+    ].join('\n'), 'utf8');
+
+    const guard = path.join(__dirname, '..', 'runtime', 'guard', 'sandbox_entry.py');
+    const result = spawnSync('python', [guard, script], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PROJECT_ROOT: root,
+        WORKSPACE_STAGE_ROOT: stageRoot,
+        WORKSPACE_CWD: scriptDirectory,
+        ALLOW_NETWORK: '0',
+      },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(await fsp.readFile(path.join(scriptDirectory, 'result.txt'), 'utf8'), '17');
+    assert.equal(fs.existsSync(path.join(root, 'result.txt')), false);
+  });
 });

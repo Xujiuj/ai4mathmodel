@@ -1,4 +1,5 @@
 import CodeMirror from '@uiw/react-codemirror';
+import ReactMarkdown from 'react-markdown';
 import {
   Braces,
   Check,
@@ -15,12 +16,68 @@ import {
   RefreshCw,
   Save,
 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { IMAGE_PREVIEW_EXTENSIONS } from '../fileTypes.js';
 import { CommandButton, IconButton, StatusPill } from './Shell.jsx';
 
-const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg']);
 const TEXT_EXTENSIONS = new Set(['.tex', '.md', '.py', '.yaml', '.yml', '.bib', '.json', '.csv', '.txt', '.log', '.js', '.jsx', '.ts', '.tsx', '.r', '.m', '.c', '.cc', '.cpp', '.h', '.hpp', '.java', '.sh', '.ps1', '.bat', '.cmd', '.toml', '.ini', '.cfg', '.conf', '.xml', '.html', '.css', '.sql', '.rst']);
 const SPREADSHEET_EXTENSIONS = new Set(['.csv', '.xlsx']);
+
+const PDF_LOAD_TIMEOUT_MS = 8000;
+
+function NativePdfPreview({ src, title, onOpenFile }) {
+  const [state, setState] = useState('loading');
+  const frameRef = useRef(null);
+  const timeoutRef = useRef(null);
+
+  useEffect(() => {
+    setState('loading');
+    timeoutRef.current = window.setTimeout(() => {
+      timeoutRef.current = null;
+      setState('timeout');
+    }, PDF_LOAD_TIMEOUT_MS);
+    return () => {
+      if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    };
+  }, [src]);
+
+  const markLoaded = () => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+    setState('loaded');
+  };
+  const markFailed = () => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+    setState('error');
+  };
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return undefined;
+    frame.addEventListener('error', markFailed);
+    return () => frame.removeEventListener('error', markFailed);
+  }, [src]);
+  const statusCopy = state === 'timeout'
+    ? { heading: 'PDF 加载超时', detail: '预览仍未响应，请使用系统程序打开文件。' }
+    : state === 'error'
+      ? { heading: 'PDF 无法加载', detail: '预览窗口无法读取此文件，请使用系统程序打开文件。' }
+      : { heading: 'PDF 正在加载', detail: '正在准备文档预览，请稍候。' };
+
+  return (
+    <div className="native-pdf-preview" data-pdf-state={state} data-pdf-timeout-ms={PDF_LOAD_TIMEOUT_MS} aria-busy={state === 'loading'}>
+      <iframe ref={frameRef} className="native-pdf" src={src} title={title} onLoadStart={() => setState('loading')} onLoad={markLoaded} onError={markFailed} />
+      {state !== 'loaded' ? (
+        <div className={`native-pdf-status native-pdf-status-${state}`} role={state === 'loading' ? 'status' : 'alert'} aria-live={state === 'loading' ? 'polite' : 'assertive'}>
+          <FileText size={25} strokeWidth={1.4} aria-hidden="true" />
+          <strong>{statusCopy.heading}</strong>
+          <p>{statusCopy.detail}</p>
+          {state === 'error' || state === 'timeout' ? <CommandButton className="native-pdf-recovery" icon={ExternalLink} onClick={onOpenFile}>使用系统程序打开 PDF</CommandButton> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function PreviewToolbar({ imagePreview, previewLabel, zoom, setZoom, onOpenFile, canOpen }) {
   return (
@@ -83,6 +140,7 @@ export function PaperWorkspace({
   latex,
   setLatex,
   onSave,
+  onSaveError,
   paper,
   figureUrl,
   spreadsheet,
@@ -96,12 +154,13 @@ export function PaperWorkspace({
   const [dirty, setDirty] = useState(false);
   const [zoom, setZoom] = useState(100);
   const extension = selectedFile?.ext?.toLowerCase() || '';
-  const isImage = IMAGE_EXTENSIONS.has(extension);
+  const isImage = IMAGE_PREVIEW_EXTENSIONS.has(extension);
   const isSpreadsheet = SPREADSHEET_EXTENSIONS.has(extension);
   const isText = selectedFile?.previewKind === 'text' || TEXT_EXTENSIONS.has(extension);
   const isPdf = extension === '.pdf';
+  const isMarkdown = extension === '.md';
   const canCompare = Boolean(compareSourceFile && pdfUrl);
-  const previewLabel = isSpreadsheet ? '表格预览' : isImage ? '图像预览' : '原始文件预览';
+  const previewLabel = isSpreadsheet ? '表格预览' : isImage ? '图像预览' : isMarkdown ? 'Markdown 预览' : '原始文件预览';
 
   useEffect(() => setDirty(false), [selectedFile?.path]);
 
@@ -110,20 +169,24 @@ export function PaperWorkspace({
     setDirty(true);
   };
   const save = useCallback(async () => {
-    await onSave();
-    setDirty(false);
-  }, [onSave]);
+    try {
+      await onSave();
+      setDirty(false);
+    } catch (error) {
+      onSaveError?.(error);
+    }
+  }, [onSave, onSaveError]);
 
   useEffect(() => {
     if (!dirty || !autoSave) return undefined;
-    const timer = window.setTimeout(() => save(), 1200);
+    const timer = window.setTimeout(() => { void save(); }, 1200);
     return () => window.clearTimeout(timer);
   }, [autoSave, dirty, latex, save]);
 
   if (pdfFocus && pdfUrl) {
     return (
       <section className="document-workspace pdf-document-workspace" aria-label="PDF 预览">
-        <iframe className="native-pdf" src={pdfUrl} title={selectedFile?.name || 'PDF 预览'} />
+        <NativePdfPreview key={pdfUrl} src={pdfUrl} title={selectedFile?.name || 'PDF 预览'} onOpenFile={onOpenPdf} />
       </section>
     );
   }
@@ -144,10 +207,11 @@ export function PaperWorkspace({
         <div className="preview-surface">
           <PreviewToolbar imagePreview={isImage && Boolean(figureUrl)} previewLabel={previewLabel} zoom={zoom} setZoom={setZoom} onOpenFile={isPdf ? onOpenPdf : onOpenSelectedFile} canOpen={Boolean(selectedFile)} />
           <div className="paper-scroll">
-            {isPdf && pdfUrl ? <iframe className="native-pdf" src={pdfUrl} title={selectedFile?.name || 'PDF 预览'} /> : null}
+            {isPdf && pdfUrl ? <NativePdfPreview key={pdfUrl} src={pdfUrl} title={selectedFile?.name || 'PDF 预览'} onOpenFile={onOpenPdf} /> : null}
             {isImage && figureUrl ? <div className="image-preview-canvas"><img src={figureUrl} alt={selectedFile?.name || '项目图片'} style={{ width: `${zoom}%` }} /></div> : null}
             {isSpreadsheet && spreadsheet ? <SpreadsheetPreview spreadsheet={spreadsheet} selectedFile={selectedFile} onOpenFile={onOpenSelectedFile} /> : null}
-            {(!isPdf || !pdfUrl) && (!isImage || !figureUrl) && (!isSpreadsheet || !spreadsheet) ? <PreviewEmpty file={selectedFile} onOpenFile={onOpenSelectedFile} /> : null}
+            {isMarkdown ? <article className="markdown-paper"><ReactMarkdown>{latex}</ReactMarkdown></article> : null}
+            {(!isPdf || !pdfUrl) && (!isImage || !figureUrl) && (!isSpreadsheet || !spreadsheet) && !isMarkdown ? <PreviewEmpty file={selectedFile} onOpenFile={onOpenSelectedFile} /> : null}
           </div>
         </div>
       ) : null}
@@ -164,7 +228,7 @@ export function PaperWorkspace({
 
       {view === 'compare' ? (
         <div className="compare-surface">
-          <div className="compare-preview">{pdfUrl ? <iframe className="native-pdf" src={pdfUrl} title="PDF 对照预览" /> : <PreviewEmpty file={paper?.pdf} onOpenFile={onOpenPdf} />}</div>
+          <div className="compare-preview">{pdfUrl ? <NativePdfPreview key={pdfUrl} src={pdfUrl} title="PDF 对照预览" onOpenFile={onOpenPdf} /> : <PreviewEmpty file={paper?.pdf} onOpenFile={onOpenPdf} />}</div>
           <div className="compare-source">
             <div className="source-toolbar"><span>{compareSourceFile?.relative}</span><IconButton label="保存" onClick={save}><Save size={15} /></IconButton></div>
             <CodeMirror value={latex} height="100%" theme={theme} onChange={updateLatex} basicSetup={{ lineNumbers: true, foldGutter: false }} />
@@ -175,7 +239,7 @@ export function PaperWorkspace({
   );
 }
 
-export function PaperCommandBar({ onCompile, onAudit, onExportPdf, onExportTex, onReveal, onOpen, running, hasPdf, hasTex }) {
+export function PaperCommandBar({ onCompile, onAudit, onExportPdf, onExportTex, onExportMarkdown, onExportDocx, onReveal, onOpen, running, hasPdf, hasTex, hasMarkdown, hasDocx, markdownEnabled }) {
   return (
     <footer className="paper-command-bar">
       <div className="command-cluster primary-cluster">
@@ -190,6 +254,8 @@ export function PaperCommandBar({ onCompile, onAudit, onExportPdf, onExportTex, 
         <span>导出</span>
         <CommandButton icon={Download} onClick={onExportPdf} disabled={!hasPdf} title={hasPdf ? undefined : '尚未生成 PDF'}>导出PDF</CommandButton>
         <CommandButton icon={FileCode2} onClick={onExportTex} disabled={!hasTex} title={hasTex ? undefined : '尚未生成 LaTeX 源文件'}>导出LaTeX</CommandButton>
+        {markdownEnabled || hasMarkdown ? <CommandButton icon={FileText} onClick={onExportMarkdown} disabled={!hasMarkdown} title={hasMarkdown ? undefined : '尚未生成 Markdown 源文件'}>导出Markdown</CommandButton> : null}
+        <CommandButton icon={FileText} onClick={onExportDocx} disabled={!hasDocx} title={hasDocx ? undefined : '尚未生成 DOCX 文件'}>导出DOCX</CommandButton>
       </div>
       <div className="command-cluster reveal-cluster">
         <span>打开位置</span>

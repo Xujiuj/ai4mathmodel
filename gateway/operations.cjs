@@ -11,7 +11,12 @@ function boundedNumber(value, fallback, minimum, maximum) {
 function normalizeOperations(raw = {}) {
   const rateLimit = raw.rateLimit || {};
   const loginRateLimit = raw.loginRateLimit || {};
+  const tokenRateLimit = raw.tokenRateLimit || {};
+  const billingRateLimit = raw.billingRateLimit || {};
+  const accountRateLimit = raw.accountRateLimit || {};
+  const billingAccountRateLimit = raw.billingAccountRateLimit || {};
   const admission = raw.admission || {};
+  const billingAdmission = raw.billingAdmission || {};
   const metrics = raw.metrics || {};
   const metricsPath = String(metrics.path || '/metrics').trim();
   return {
@@ -26,10 +31,35 @@ function normalizeOperations(raw = {}) {
       maxTrackedIdentities: boundedNumber(loginRateLimit.maxTrackedIdentities, 10_000, 100, 1_000_000),
       trustProxy: loginRateLimit.trustProxy === true,
     },
+    tokenRateLimit: {
+      windowMs: boundedNumber(tokenRateLimit.windowMs, 900_000, 60_000, 3_600_000),
+      maxAttempts: boundedNumber(tokenRateLimit.maxAttempts, 8, 1, 100),
+      maxTrackedIdentities: boundedNumber(tokenRateLimit.maxTrackedIdentities, 10_000, 100, 1_000_000),
+    },
+    billingRateLimit: {
+      windowMs: boundedNumber(billingRateLimit.windowMs, 60_000, 1_000, 3_600_000),
+      maxRequests: boundedNumber(billingRateLimit.maxRequests, 30, 1, 10_000),
+      maxTrackedDevices: boundedNumber(billingRateLimit.maxTrackedDevices, 10_000, 100, 1_000_000),
+    },
+    accountRateLimit: {
+      windowMs: boundedNumber(accountRateLimit.windowMs, 60_000, 1_000, 3_600_000),
+      maxRequests: boundedNumber(accountRateLimit.maxRequests, 30, 1, 10_000),
+      maxTrackedDevices: boundedNumber(accountRateLimit.maxTrackedDevices, 10_000, 100, 1_000_000),
+    },
+    billingAccountRateLimit: {
+      windowMs: boundedNumber(billingAccountRateLimit.windowMs, 60_000, 1_000, 3_600_000),
+      maxRequests: boundedNumber(billingAccountRateLimit.maxRequests, 30, 1, 10_000),
+      maxTrackedDevices: boundedNumber(billingAccountRateLimit.maxTrackedDevices, 10_000, 100, 1_000_000),
+    },
     admission: {
       maxConcurrent: boundedNumber(admission.maxConcurrent, 4, 1, 128),
       maxQueued: boundedNumber(admission.maxQueued, 24, 0, 10_000),
       queueTimeoutMs: boundedNumber(admission.queueTimeoutMs, 300_000, 1_000, 900_000),
+    },
+    billingAdmission: {
+      maxConcurrent: boundedNumber(billingAdmission.maxConcurrent, 2, 1, 32),
+      maxQueued: boundedNumber(billingAdmission.maxQueued, 8, 0, 128),
+      queueTimeoutMs: boundedNumber(billingAdmission.queueTimeoutMs, 10_000, 1_000, 120_000),
     },
     shutdownGraceMs: boundedNumber(raw.shutdownGraceMs, 30_000, 1_000, 900_000),
     metrics: {

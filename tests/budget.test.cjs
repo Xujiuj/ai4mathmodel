@@ -2,7 +2,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { computeCost, resolvePricing } = require('../electron/pricing.cjs');
 const { normalizeBudget, DEFAULT_BUDGET, createRunState } = require('../electron/supervisor/contracts.cjs');
-const { classifyFailure, shouldPauseImmediately, FAILURE_CLASSES } = require('../electron/supervisor/retry-policy.cjs');
+const {
+  classifyFailure,
+  shouldPauseImmediately,
+  shouldSkipRemainingRoute,
+  FAILURE_CLASSES,
+} = require('../electron/supervisor/retry-policy.cjs');
 const { accumulateSpend, assertBudget } = require('../electron/supervisor/supervisor.cjs');
 const { toPublicPipelineEvent } = require('../electron/public-events.cjs');
 
@@ -28,6 +33,16 @@ test('BUDGET_EXCEEDED pauses immediately as configuration failure', () => {
   assert.equal(failure.category, FAILURE_CLASSES.CONFIGURATION);
   assert.equal(failure.retryable, false);
   assert.ok(shouldPauseImmediately(failure));
+});
+
+test('retries a provider 5xx that is surfaced as MODEL_UNAVAILABLE', () => {
+  const failure = classifyFailure({
+    error: { code: 'MODEL_UNAVAILABLE', status: 502, message: '模型服务暂时不可用。' },
+  });
+  assert.equal(failure.category, FAILURE_CLASSES.TRANSPORT);
+  assert.equal(failure.retryable, true);
+  assert.equal(shouldPauseImmediately(failure), false);
+  assert.equal(shouldSkipRemainingRoute(failure), false);
 });
 
 test('assertBudget throws when cost exceeds maxCostPerRun', () => {

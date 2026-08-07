@@ -5,12 +5,8 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const projectRoot = path.resolve(__dirname, '..');
-const runtimeRoot = path.join(projectRoot, 'runtime');
-const runtimeLock = JSON.parse(fs.readFileSync(path.join(__dirname, 'runtime-lock.json'), 'utf8'));
-const executables = Object.freeze({
-  python: path.join(runtimeRoot, 'python', 'python.exe'),
-  tectonic: path.join(runtimeRoot, 'tectonic', 'tectonic.exe'),
-});
+const defaultRuntimeRoot = path.join(projectRoot, 'runtime');
+const defaultRuntimeLockPath = path.join(__dirname, 'runtime-lock.json');
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -32,7 +28,38 @@ function sha256(file) {
   return require('node:crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
-function assertRuntimeLayout() {
+function resolvePaths({ runtimeRoot = defaultRuntimeRoot, runtimeLockPath = defaultRuntimeLockPath } = {}) {
+  return {
+    runtimeRoot: path.resolve(projectRoot, runtimeRoot),
+    runtimeLockPath: path.resolve(__dirname, runtimeLockPath),
+  };
+}
+
+function readRuntimeLock(runtimeLockPath = defaultRuntimeLockPath) {
+  return JSON.parse(fs.readFileSync(runtimeLockPath, 'utf8'));
+}
+
+function assertFileIntegrity(filePath, { size, sha256: expectedSha256 }, label) {
+  assert.ok(Number.isInteger(size) && size >= 0, `missing size metadata for ${label}`);
+  assert.match(String(expectedSha256 || ''), /^[a-f0-9]{64}$/i, `missing hash metadata for ${label}`);
+  assert.equal(fs.existsSync(filePath), true, `missing bundled ${label}`);
+  assert.equal(fs.statSync(filePath).size, size, `${label} size changed`);
+  assert.equal(sha256(filePath), expectedSha256, `${label} hash changed`);
+}
+
+function assertGuardArtifacts(runtimeRoot, runtimeLock) {
+  const guardLock = runtimeLock.guard || {};
+  assert.ok(Object.keys(guardLock).length > 0, 'bundled guard artifacts are missing from runtime lock');
+  for (const [name, metadata] of Object.entries(guardLock)) {
+    assertFileIntegrity(path.join(runtimeRoot, 'guard', name), metadata, `guard artifact ${name}`);
+  }
+}
+
+function assertRuntimeLayout(runtimeRoot = defaultRuntimeRoot, runtimeLock = readRuntimeLock()) {
+  const executables = Object.freeze({
+    python: path.join(runtimeRoot, 'python', 'python.exe'),
+    tectonic: path.join(runtimeRoot, 'tectonic', 'tectonic.exe'),
+  });
   const minimumSizes = { python: 50 * 1024, tectonic: 20 * 1024 * 1024 };
   for (const [tool, executable] of Object.entries(executables)) {
     assert.equal(fs.existsSync(executable), true, `missing bundled ${tool}`);
@@ -47,6 +74,8 @@ function assertRuntimeLayout() {
     assert.ok(fs.statSync(font).size > 1024 * 1024, `bundled font alias is unexpectedly small: ${name}`);
     assert.equal(sha256(font), runtimeLock.tectonic.fontAliases[name], `bundled font alias hash changed: ${name}`);
   }
+
+  assertGuardArtifacts(runtimeRoot, runtimeLock);
 
   const cacheRoot = path.join(runtimeRoot, 'tectonic', 'cache');
   let cacheFiles = 0;
@@ -76,10 +105,12 @@ function assertRuntimeLayout() {
       if (entry.isDirectory()) pending.push(path.join(directory, entry.name));
     }
   }
-
 }
 
-function smokeTectonicCompile() {
+function smokeTectonicCompile(runtimeRoot = defaultRuntimeRoot) {
+  const executables = Object.freeze({
+    tectonic: path.join(runtimeRoot, 'tectonic', 'tectonic.exe'),
+  });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mmw-tectonic-audit-'));
   const source = path.join(root, 'runtime-smoke.tex');
   try {
@@ -115,7 +146,11 @@ function smokeTectonicCompile() {
   }
 }
 
-function smokeRuntime() {
+function smokeRuntime(runtimeRoot = defaultRuntimeRoot) {
+  const executables = Object.freeze({
+    python: path.join(runtimeRoot, 'python', 'python.exe'),
+    tectonic: path.join(runtimeRoot, 'tectonic', 'tectonic.exe'),
+  });
   const pythonEnvironment = {
     ...process.env,
     PYTHONDONTWRITEBYTECODE: '1',
@@ -136,7 +171,38 @@ function smokeRuntime() {
   process.stdout.write(`${pythonVersion}\n${tectonicVersion}\n`);
 }
 
-assertRuntimeLayout();
-smokeRuntime();
-smokeTectonicCompile();
-process.stdout.write('Bundled runtime verification passed.\n');
+function verifyRuntime({
+  runtimeRoot = defaultRuntimeRoot,
+  runtimeLockPath = defaultRuntimeLockPath,
+  smoke = true,
+} = {}) {
+  const resolved = resolvePaths({ runtimeRoot, runtimeLockPath });
+  const runtimeLock = readRuntimeLock(resolved.runtimeLockPath);
+  assertRuntimeLayout(resolved.runtimeRoot, runtimeLock);
+  if (smoke) {
+    smokeRuntime(resolved.runtimeRoot);
+    smokeTectonicCompile(resolved.runtimeRoot);
+  }
+  return runtimeLock;
+}
+
+if (require.main === module) {
+  try {
+    verifyRuntime();
+    process.stdout.write('Bundled runtime verification passed.\n');
+  } catch (error) {
+    process.stderr.write(`${error.stack || error.message}\n`);
+    process.exitCode = 1;
+  }
+} else {
+  module.exports = {
+    assertFileIntegrity,
+    assertGuardArtifacts,
+    assertRuntimeLayout,
+    readRuntimeLock,
+    resolvePaths,
+    smokeRuntime,
+    smokeTectonicCompile,
+    verifyRuntime,
+  };
+}

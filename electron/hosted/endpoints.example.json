@@ -1,4 +1,5 @@
 {
-  "gateway": "https://gw.example.com",
-  "portal": "https://portal.example.com"
+  "gateway": "https://gw.example.com/agent",
+  "portal": "https://portal.example.com",
+  "gatewayCertificateFingerprint256": ""
 }

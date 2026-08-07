@@ -6,7 +6,12 @@ node_modules/
 # Generated application and installer payloads
 dist/
 release/
-runtime/
+runtime/*
+!runtime/guard/
+runtime/guard/*
+!runtime/guard/scan.py
+!runtime/guard/sandbox_entry.py
+!runtime/THIRD_PARTY_NOTICES.txt
 
 # Private execution implementation and protected build inputs
 electron/main.cjs
@@ -24,6 +29,20 @@ scripts/runtime-lock.json
 scripts/runtime-python-requirements.txt
 scripts/hosted-eval.config.json
 tests/release-boundary.test.cjs
+.tmp-sub2api-source*/
+
+# Release source inputs must remain available in a clean checkout. The
+# distribution build bundles and encrypts them; generated protected outputs
+# and deployment-specific credentials stay ignored above.
+!electron/main.cjs
+!electron/supervisor/playbooks.cjs
+!electron/supervisor/retry-policy.cjs
+!electron/supervisor/supervisor.cjs
+!gateway/playbooks.cjs
+!scripts/build-protected-runtime.cjs
+!scripts/runtime-lock.json
+!scripts/runtime-python-requirements.txt
+!tests/release-boundary.test.cjs
 
 # Local application data, diagnostics, and design working files
 *.log

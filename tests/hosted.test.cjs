@@ -9,15 +9,16 @@ const { applyHostedCatalog, normalizeSettings } = require('../electron/runtime-c
 const { PLACEHOLDER_LENGTH, parsePlaceholder, playbookPlaceholder } = require('../electron/hosted/playbook-ref.cjs');
 const { createHostedSession } = require('../electron/hosted/session.cjs');
 const { createHostedClient } = require('../electron/hosted/client.cjs');
-const { hostedEndpoints } = require('../electron/hosted/endpoints.cjs');
+const { hostedEndpoints, isPinnedGatewayCertificate } = require('../electron/hosted/endpoints.cjs');
+const { certificateVerificationResult, registerHostedCertificatePin } = require('../electron/hosted/tls-pinning.cjs');
 const { openKey, sealKey, sign, verify } = require('../gateway/tokens.cjs');
 const { spliceHead } = require('../gateway/server.cjs');
 const { createGateway } = require('../gateway/server.cjs');
 
 const CATALOG = {
   baseUrl: 'https://gw.example.com/v1',
-  tiers: [{ id: 'standard', label: '标准', models: { reasoning: 'r-model', writing: 'w-model', image: 'i-model' } }],
-  defaultTiers: { reasoning: 'standard', writing: 'standard', image: 'standard' },
+  tiers: [{ id: 'standard', label: '标准', models: { reasoning: 'r-model', coding: 'c-model', writing: 'w-model', image: 'i-model' } }],
+  defaultTiers: { reasoning: 'standard', coding: 'standard', writing: 'standard', image: 'standard' },
   topUpEnabled: false,
 };
 
@@ -37,11 +38,12 @@ test('hosted runs ignore locally configured endpoints and pricing overrides', ()
   assert.equal(normalizeSettings(raw).connections.reasoning.baseUrl, 'https://attacker.example/v1');
 
   const effective = applyHostedCatalog(raw, CATALOG);
-  for (const key of ['reasoning', 'writing', 'image']) {
+  for (const key of ['reasoning', 'coding', 'writing', 'image']) {
     assert.equal(effective.connections[key].baseUrl, 'https://gw.example.com/v1');
     assert.equal(effective.connections[key].protocol, 'openai');
   }
   assert.equal(effective.connections.reasoning.model, 'r-model');
+  assert.equal(effective.connections.coding.model, 'c-model');
   assert.deepEqual(effective.pricingOverrides, {});
 });
 
@@ -49,6 +51,83 @@ test('legacy configured installs stay on their own models', () => {
   const settings = normalizeSettings({ connections: { reasoning: { baseUrl: 'https://api.example/v1', model: 'm' } } });
   assert.equal(settings.mode, 'byok');
   assert.equal(settings.connections.reasoning.model, 'm');
+});
+
+test('accepts a self-signed gateway certificate only when its origin and SHA-256 fingerprint match', () => {
+  const fingerprint = 'AA'.repeat(32);
+  const endpoints = hostedEndpoints({
+    MODELING_HOSTED_GATEWAY: 'https://124.221.155.102:8080/agent',
+    MODELING_HOSTED_PORTAL: 'https://124.221.155.102:8080/agent',
+    MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256: fingerprint,
+  });
+  assert.equal(endpoints.gatewayCertificateFingerprint256, Array(32).fill('AA').join(':'));
+  assert.equal(isPinnedGatewayCertificate({
+    url: 'https://124.221.155.102:8080/agent/health',
+    fingerprint256: endpoints.gatewayCertificateFingerprint256,
+    endpoints,
+  }), true);
+  assert.equal(isPinnedGatewayCertificate({
+    url: 'https://124.221.155.102/agent/health',
+    fingerprint256: endpoints.gatewayCertificateFingerprint256,
+    endpoints,
+  }), false);
+  assert.equal(isPinnedGatewayCertificate({
+    url: 'https://124.221.155.102:8080/agent/health',
+    fingerprint256: 'BB'.repeat(32),
+    endpoints,
+  }), false);
+});
+
+test('certificate pin handler permits only the configured self-signed gateway certificate', () => {
+  let handler;
+  const app = { on: (event, callback) => { if (event === 'certificate-error') handler = callback; } };
+  const endpoints = hostedEndpoints({
+    MODELING_HOSTED_GATEWAY: 'https://124.221.155.102:8080/agent',
+    MODELING_HOSTED_PORTAL: 'https://124.221.155.102:8080/agent',
+    MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256: 'AA'.repeat(32),
+  });
+  registerHostedCertificatePin(app, () => endpoints);
+  let prevented = false;
+  let accepted = null;
+  handler({ preventDefault: () => { prevented = true; } }, null, 'https://124.221.155.102:8080/agent/health', 'net::ERR_CERT_AUTHORITY_INVALID', {
+    fingerprint256: Array(32).fill('AA').join(':'),
+  }, (value) => { accepted = value; });
+  assert.equal(prevented, true);
+  assert.equal(accepted, true);
+
+  prevented = false;
+  accepted = null;
+  handler({ preventDefault: () => { prevented = true; } }, null, 'https://124.221.155.102:8080/agent/health', 'net::ERR_CERT_DATE_INVALID', {
+    fingerprint256: Array(32).fill('AA').join(':'),
+  }, (value) => { accepted = value; });
+  assert.equal(prevented, false);
+  assert.equal(accepted, false);
+});
+
+test('session certificate verifier preserves trusted certificates and pins only the hosted gateway', () => {
+  const endpoints = hostedEndpoints({
+    MODELING_HOSTED_GATEWAY: 'https://124.221.155.102:8080/agent',
+    MODELING_HOSTED_PORTAL: 'https://124.221.155.102:8080/agent',
+    MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256: 'AA'.repeat(32),
+  });
+  const getEndpoints = () => endpoints;
+
+  assert.equal(certificateVerificationResult({ verificationResult: 'OK' }, getEndpoints), 0);
+  assert.equal(certificateVerificationResult({
+    verificationResult: 'ERR_CERT_AUTHORITY_INVALID',
+    hostname: '124.221.155.102',
+    certificate: { fingerprint256: Array(32).fill('AA').join(':') },
+  }, getEndpoints), 0);
+  assert.equal(certificateVerificationResult({
+    verificationResult: 'ERR_CERT_AUTHORITY_INVALID',
+    hostname: 'other.example',
+    certificate: { fingerprint256: Array(32).fill('AA').join(':') },
+  }, getEndpoints), -2);
+  assert.equal(certificateVerificationResult({
+    verificationResult: 'ERR_CERT_DATE_INVALID',
+    hostname: '124.221.155.102',
+    certificate: { fingerprint256: Array(32).fill('AA').join(':') },
+  }, getEndpoints), -2);
 });
 
 test('hosted catalog supplies the effective connections', () => {
@@ -129,6 +208,7 @@ test('gateway binds short tokens to devices and reconciles usage by request id',
     tiers: CATALOG.tiers,
     defaultTiers: CATALOG.defaultTiers,
     imageEnabled: true,
+    imageGatewayBaseUrl: upstreamBase,
     maxImagesPerStage: 1,
     sub2api: {
       loginPath: '/api/v1/auth/login',
@@ -234,22 +314,25 @@ test('hosted session encrypts the credential and keeps a stable device id', asyn
 
 test('hosted client caches access tokens and maps upstream failures', async () => {
   const endpoints = hostedEndpoints({
-    MODELING_HOSTED_GATEWAY: 'https://gw.example.com',
+    MODELING_HOSTED_GATEWAY: 'https://gw.example.com/agent',
     MODELING_HOSTED_PORTAL: 'https://portal.example.com',
   });
   let issued = 0;
   let clock = 1_000_000;
+  let cleared = 0;
+  let logoutAuthorization = '';
   const session = {
     deviceId: async () => 'device',
     credential: async () => 'credential',
     setCredential: async () => {},
-    clear: async () => {},
+    clear: async () => { cleared += 1; },
   };
   const client = createHostedClient({
     endpoints,
     session,
     now: () => clock,
-    fetchImpl: async (url) => {
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/ready')) return jsonResponse({ ok: true });
       if (url.endsWith('/auth/token')) {
         issued += 1;
         return jsonResponse({ accessToken: `token-${issued}`, expiresAt: clock + 15 * 60 * 1000 });
@@ -257,9 +340,15 @@ test('hosted client caches access tokens and maps upstream failures', async () =
       if (url.endsWith('/catalog')) return jsonResponse(CATALOG);
       if (url.endsWith('/account')) return jsonResponse({ balance: 12.5, currency: 'cny', email: 'a@b.c' });
       if (url.endsWith('/billing')) return jsonResponse({ actualCost: 0.75, balance: 11.75, currency: 'usd', complete: true });
+      if (url.endsWith('/auth/logout')) {
+        logoutAuthorization = options.headers.Authorization;
+        return jsonResponse({ ok: true });
+      }
       return jsonResponse({ error: 'x' }, 402);
     },
   });
+
+  assert.deepEqual(await client.health(), { available: true, checkedAt: clock });
 
   assert.equal(await client.accessToken(), 'token-1');
   assert.equal(await client.accessToken(), 'token-1');
@@ -273,7 +362,7 @@ test('hosted client caches access tokens and maps upstream failures', async () =
   assert.equal(account.balance, 12.5);
   assert.equal(account.currency, 'CNY');
 
-  assert.deepEqual(await client.billing(['req-1', 'req-1']), {
+  assert.deepEqual(await client.billing(['req-1', 'req-1'], 'pipeline-1'), {
     actualCost: 0.75,
     balance: 11.75,
     currency: 'USD',
@@ -282,11 +371,18 @@ test('hosted client caches access tokens and maps upstream failures', async () =
   });
 
   await assert.rejects(client.topUpUrl(), (error) => error.code === 'HOSTED_TOPUP_UNAVAILABLE');
+  await client.logout();
+  assert.equal(logoutAuthorization, 'Bearer credential');
+  assert.equal(cleared, 1);
 });
 
 test('hosted client refuses to run without configured endpoints', async () => {
   const client = createHostedClient({
-    endpoints: hostedEndpoints({}),
+    endpoints: {
+      gateway: '',
+      portal: '',
+      gatewayCertificateFingerprint256: '',
+    },
     session: { deviceId: async () => 'device', credential: async () => '' },
     fetchImpl: async () => jsonResponse({}),
   });

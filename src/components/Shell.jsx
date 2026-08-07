@@ -29,6 +29,7 @@ import {
   UserRound,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { canonicalProjectRoot } from '../runState.js';
 
 export function IconButton({ label, children, className = '', ...props }) {
   return (
@@ -57,7 +58,11 @@ export function AppSidebar({ projects, activeProject, stages, activeStage, onSel
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const visible = projects.filter((project) => project.name.toLowerCase().includes(query.toLowerCase()));
   const stageItems = stages || [];
-  const runByRoot = new Map(activeRuns.map((item) => [String(item.root || '').toLowerCase(), item]));
+  const runByRoot = new Map(
+    activeRuns
+      .map((item) => [canonicalProjectRoot(item.root), item])
+      .filter(([root]) => Boolean(root)),
+  );
   return (
     <aside className="app-sidebar" aria-label="应用导航">
       <div className="brand-row">
@@ -65,9 +70,9 @@ export function AppSidebar({ projects, activeProject, stages, activeStage, onSel
         <span className="brand-copy"><strong>数模工坊</strong><small>Modeling Studio</small></span>
       </div>
       <nav className="sidebar-primary" aria-label="主要操作">
-        <button onClick={onNew} disabled={!desktopAvailable}><Plus size={16} /><span>新建项目</span></button>
-        <button onClick={onImport} disabled={!desktopAvailable}><FolderInput size={16} /><span>导入项目</span></button>
-        <button onClick={onOpenRuns} className={running ? 'running' : ''}><History size={16} /><span>运行记录</span>{running ? <i /> : null}</button>
+        <button aria-label="新建项目" onClick={onNew} disabled={!desktopAvailable}><Plus size={16} /><span>新建项目</span></button>
+        <button aria-label="导入项目" onClick={onImport} disabled={!desktopAvailable}><FolderInput size={16} /><span>导入项目</span></button>
+        <button aria-label="运行记录" onClick={onOpenRuns} className={running ? 'running' : ''}><History size={16} /><span>运行记录</span>{running ? <i /> : null}</button>
       </nav>
 
       <section className="sidebar-projects">
@@ -90,7 +95,7 @@ export function AppSidebar({ projects, activeProject, stages, activeStage, onSel
               {visible.map((project) => {
                 const active = project.id === activeProject?.id;
                 const expanded = active && !collapsedProjects[project.id];
-                const projectRun = runByRoot.get(String(project.root || '').toLowerCase());
+                const projectRun = runByRoot.get(canonicalProjectRoot(project.root));
                 return (
                   <div className={`project-node ${active ? 'active' : ''}`} key={project.id}>
                     <div className="project-node-line">
@@ -106,7 +111,14 @@ export function AppSidebar({ projects, activeProject, stages, activeStage, onSel
                         <span>{project.name}</span>
                         {projectRun ? <small className="project-running">{projectRun.stage || '运行中'}</small> : null}
                       </button>
-                      {active ? <IconButton className="project-remove" label="从列表移除项目" onClick={() => onRemove(project)}><Trash2 size={13} /></IconButton> : null}
+                      {active ? (
+                        <IconButton
+                          className="project-remove"
+                          label={projectRun ? '任务运行中，无法移除项目' : '从列表移除项目'}
+                          disabled={Boolean(projectRun)}
+                          onClick={() => onRemove(project)}
+                        ><Trash2 size={13} /></IconButton>
+                      ) : null}
                     </div>
                     {expanded ? (
                       <nav className="stage-tree" aria-label={`${project.name} 阶段`}>
@@ -133,8 +145,8 @@ export function AppSidebar({ projects, activeProject, stages, activeStage, onSel
       </section>
 
       <footer className="sidebar-footer">
-        <button onClick={onAccount} disabled={!onAccount}><UserRound size={16} /><span>账户与充值</span></button>
-        <button onClick={onSettings} disabled={!onSettings}><Settings size={16} /><span>设置与模型</span></button>
+        <button aria-label="账户与充值" onClick={onAccount} disabled={!onAccount}><UserRound size={16} /><span>账户与充值</span></button>
+        <button aria-label="设置与模型" onClick={onSettings} disabled={!onSettings}><Settings size={16} /><span>设置与模型</span></button>
       </footer>
     </aside>
   );
@@ -163,9 +175,9 @@ export function ProjectSummary({ project, stages, activeStage, stats, onModels, 
         <span><strong>{stats?.tableCount || 0}</strong>表</span>
       </div>
       <div className="summary-actions">
-        <button className="model-chip" onClick={onModels} title="配置求解所需模型"><Cpu size={14} /><span>{modelLabel}</span></button>
+        <button className="model-chip" aria-label="设置与模型" onClick={onModels} title="配置求解所需模型"><Cpu size={14} /><span>{modelLabel}</span></button>
         <IconButton className={sidePanelOpen ? 'active' : ''} label="项目文件" onClick={onFiles}><Files size={16} /></IconButton>
-        <CommandButton tone="primary" icon={running ? LoaderCircle : Play} onClick={onPrimary} disabled={running} className={running ? 'is-running' : ''}>{primaryLabel}</CommandButton>
+        <CommandButton tone="primary" icon={running ? LoaderCircle : Play} aria-label={primaryLabel} onClick={onPrimary} disabled={running} className={running ? 'is-running' : ''}>{primaryLabel}</CommandButton>
       </div>
     </header>
   );

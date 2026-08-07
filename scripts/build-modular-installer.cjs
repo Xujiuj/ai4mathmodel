@@ -65,6 +65,19 @@ function run(command, args, options = {}) {
   return result;
 }
 
+function signWindowsArtifact(target) {
+  const signTool = String(process.env.WINDOWS_SIGNTOOL_PATH || '').trim();
+  const thumbprint = String(process.env.WINDOWS_SIGNING_CERT_SHA1 || '').replace(/\s/g, '');
+  if (!signTool && !thumbprint) return false;
+  if (!signTool || !/^[a-f0-9]{40}$/i.test(thumbprint)) {
+    throw new Error('Windows signing requires WINDOWS_SIGNTOOL_PATH and a SHA-1 certificate thumbprint.');
+  }
+  const timestampUrl = String(process.env.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com').trim();
+  run(signTool, ['sign', '/sha1', thumbprint, '/fd', 'SHA256', '/tr', timestampUrl, '/td', 'SHA256', target]);
+  run(signTool, ['verify', '/pa', '/all', target]);
+  return true;
+}
+
 function archiveComponent(sevenZip, { id, sourceRoot, sourceEntry, required = false, reuse = false }) {
   const file = `MathModelingWorkbench-${packageInfo.version}-${id}.7z`;
   const output = path.join(packagesRoot, file);
@@ -138,6 +151,7 @@ function main() {
     `/DICON_FILE=${nsisPath(path.join(projectRoot, 'build', 'app-icon.ico'))}`,
     launcherScript,
   ]);
+  signWindowsArtifact(launcherExecutable);
   const entryExecutableBytes = fs.statSync(launcherExecutable).size;
   if (entryExecutableBytes >= 1024 * 1024) throw new Error(`Application launcher is too large: ${entryExecutableBytes} bytes`);
 
@@ -186,6 +200,7 @@ function main() {
     `/DICON_FILE=${nsisPath(path.join(projectRoot, 'build', 'app-icon.ico'))}`,
     installerScript,
   ]);
+  signWindowsArtifact(setupFile);
 
   fs.rmSync(stagingRoot, { recursive: true, force: true });
   fs.rmSync(buildRoot, { recursive: true, force: true });

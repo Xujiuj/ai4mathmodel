@@ -1,0 +1,52 @@
+services:
+  account-api:
+    build:
+      context: .
+    env_file: .env
+    environment:
+      ACCOUNT_API_BIND_HOST: 0.0.0.0
+      ACCOUNT_API_SIGNUP_GRANT_CREDITS: ${ACCOUNT_API_SIGNUP_GRANT_CREDITS:-0}
+    restart: unless-stopped
+    depends_on:
+      account-postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${ACCOUNT_API_PORT:-18090}:18090"
+    networks: [account-internal]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:18090/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+  account-postgres:
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE must be pinned by digest}
+    env_file: .env
+    restart: unless-stopped
+    networks: [account-internal]
+    volumes:
+      - account_postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+networks:
+  account-internal:
+    internal: true
+volumes:
+  account_postgres_data:

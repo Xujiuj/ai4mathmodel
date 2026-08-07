@@ -1,4 +1,5 @@
 const { cleanBaseUrl, connectionProtocol } = require('../model-discovery.cjs');
+const { RESEARCH_TOOL_DEFINITION, RESEARCH_TOOL_NAME } = require('./research.cjs');
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
@@ -6,6 +7,7 @@ const MAX_TOOL_OUTPUT_CHARS = 24_000;
 const MAX_FINAL_OUTPUT_CHARS = 48_000;
 const MAX_TURNS = 72;
 const MAX_HISTORY_MESSAGES = 28;
+const MAX_HISTORY_SUMMARY_CHARS = 1_800;
 
 const WORKSPACE_TOOL_DEFINITIONS = Object.freeze([
   {
@@ -84,6 +86,7 @@ const WORKSPACE_TOOL_DEFINITIONS = Object.freeze([
     description: '编译 work/03_paper 下的论文入口 TeX，并使用可用的本地或随附 LaTeX 编译器。',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
   },
+  RESEARCH_TOOL_DEFINITION,
 ]);
 
 function providerError(code, status = 0) {
@@ -114,7 +117,7 @@ function cleanText(value, limit = MAX_FINAL_OUTPUT_CHARS) {
 
 function protocolFor(connection = {}) {
   const protocol = connectionProtocol(connection);
-  if (!['openai', 'ollama', 'anthropic'].includes(protocol)) throw providerError('MODEL_CONFIGURATION_INVALID');
+  if (!['openai', 'openai-responses', 'ollama', 'anthropic'].includes(protocol)) throw providerError('MODEL_CONFIGURATION_INVALID');
   return protocol;
 }
 
@@ -127,10 +130,14 @@ function providerEndpoint(connection = {}) {
     const root = /\/v1(?:\/.*)?$/i.test(baseUrl) ? baseUrl.replace(/\/v1(?:\/.*)?$/i, '') : baseUrl;
     return `${root}/v1/messages`;
   }
+  if (protocol === 'openai-responses') {
+    const root = /\/v1(?:\/.*)?$/i.test(baseUrl) ? baseUrl.replace(/\/v1(?:\/.*)?$/i, '') : baseUrl;
+    return `${root}/v1/responses`;
+  }
   return `${baseUrl.replace(/\/chat\/completions$/i, '')}/chat/completions`;
 }
 
-const ALLOWED_EXTRA_HEADERS = new Set(['X-Device-Id', 'X-Stage']);
+const ALLOWED_EXTRA_HEADERS = new Set(['X-Device-Id', 'X-Stage', 'X-Pipeline-Id']);
 
 function sanitizeExtraHeaders(extra = {}) {
   const headers = {};
@@ -157,6 +164,18 @@ function providerHeaders(protocol, apiKey = '', authMode = 'api-key', extraHeade
 function providerTools(protocol, tools = WORKSPACE_TOOL_DEFINITIONS) {
   if (protocol === 'anthropic') {
     return tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.input_schema }));
+  }
+  if (protocol === 'openai-responses') {
+    return tools.map((tool) => {
+      const source = tool?.function || tool || {};
+      return {
+      type: 'function',
+      name: source.name,
+      description: source.description || '',
+      parameters: source.parameters || source.input_schema || {},
+      strict: source.strict !== false,
+      };
+    });
   }
   return tools.map((tool) => ({
     type: 'function',
@@ -203,6 +222,34 @@ function openAiAnswer(payload) {
   return { text: cleanText(textFromContent(message.content)), toolCalls, assistant: message, usage };
 }
 
+function responsesAnswer(payload) {
+  const output = Array.isArray(payload?.output) ? payload.output : [];
+  const text = output
+    .filter((item) => item?.type === 'message')
+    .flatMap((item) => Array.isArray(item.content) ? item.content : [])
+    .filter((part) => part?.type === 'output_text')
+    .map((part) => part.text || '')
+    .join('');
+  const toolCalls = output
+    .filter((item) => item?.type === 'function_call' && item?.name)
+    .map((item, index) => ({
+      id: cleanText(item.call_id || item.id || `tool-${index}`, 160),
+      name: cleanText(item.name, 80),
+      input: parseArguments(item.arguments),
+      raw: item,
+    }));
+  return {
+    text: cleanText(text),
+    toolCalls,
+    assistant: { role: 'assistant', content: text || null, output },
+    usage: {
+      inputTokens: Number(payload?.usage?.input_tokens || 0),
+      outputTokens: Number(payload?.usage?.output_tokens || 0),
+      cacheReadTokens: 0,
+    },
+  };
+}
+
 function mergeStreamDelta(message, chunk) {
   const delta = chunk?.choices?.[0]?.delta;
   if (!delta || typeof delta !== 'object') return;
@@ -219,6 +266,28 @@ function mergeStreamDelta(message, chunk) {
   }
 }
 
+function validHttpStatus(value) {
+  const status = Number(value);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : 0;
+}
+
+function inBandStreamErrorStatus(error) {
+  if (!error || typeof error !== 'object') return 0;
+  for (const value of [error.status, error.status_code, error.statusCode, error.http_status, error.httpStatus, error.code]) {
+    const status = validHttpStatus(value);
+    if (status) return status;
+  }
+  const detail = [error.type, error.code, error.message].map((value) => String(value || '')).join(' ').toLowerCase();
+  if (/rate.?limit|too many requests/.test(detail)) return 429;
+  if (/authentication|unauthori[sz]ed|invalid (?:api )?key/.test(detail)) return 401;
+  if (/permission|forbidden/.test(detail)) return 403;
+  if (/invalid.?request|context|unsupported/.test(detail)) return 400;
+  // Some OpenAI-compatible relays have already committed HTTP 200 for SSE
+  // before discovering an upstream 5xx. Preserve that retryable meaning.
+  if (/upstream|server.?error|api.?error|overload|unavailable|temporar/.test(detail)) return 502;
+  return 0;
+}
+
 // 长任务经中转与反向代理时，非流式响应易被空闲超时掐断，因此托管链路统一用 SSE 增量重组。
 async function readOpenAiStream(response) {
   const reader = response?.body?.getReader?.();
@@ -230,41 +299,157 @@ async function readOpenAiStream(response) {
   let usage = null;
   let done = false;
 
-  while (!done) {
-    const step = await reader.read();
-    if (step.done) break;
-    size += step.value?.length || 0;
-    if (size > MAX_RESPONSE_BYTES) throw providerError('MODEL_RESPONSE_INVALID');
-    buffer += decoder.decode(step.value, { stream: true });
-    let breakIndex = buffer.indexOf('\n');
-    while (breakIndex >= 0) {
-      const line = buffer.slice(0, breakIndex).trim();
-      buffer = buffer.slice(breakIndex + 1);
-      breakIndex = buffer.indexOf('\n');
-      if (!line.startsWith('data:')) continue;
+  try {
+    const processLine = (rawLine) => {
+      const line = rawLine.trim();
+      if (!line.startsWith('data:')) return;
       const data = line.slice(5).trim();
       if (data === '[DONE]') {
         done = true;
-        break;
+        return;
       }
       let chunk;
       try {
         chunk = JSON.parse(data);
       } catch {
-        continue;
+        return;
       }
-      if (chunk?.error) throw providerError('MODEL_UNAVAILABLE');
+      if (chunk?.error) {
+        const status = inBandStreamErrorStatus(chunk.error);
+        throw status ? statusError(status) : providerError('MODEL_UNAVAILABLE');
+      }
       mergeStreamDelta(message, chunk);
       if (chunk?.usage) usage = chunk.usage;
-    }
-  }
+    };
 
-  const toolCalls = message.tool_calls.filter((call) => call?.function?.name);
-  if (!message.content && !toolCalls.length) throw providerError('MODEL_RESPONSE_INVALID');
-  return {
-    choices: [{ message: { ...message, tool_calls: toolCalls.length ? toolCalls : undefined } }],
-    usage,
-  };
+    while (!done) {
+      const step = await reader.read();
+      if (step.done) break;
+      size += step.value?.length || 0;
+      if (size > MAX_RESPONSE_BYTES) throw providerError('MODEL_RESPONSE_INVALID');
+      buffer += decoder.decode(step.value, { stream: true });
+      let breakIndex = buffer.indexOf('\n');
+      while (breakIndex >= 0) {
+        const line = buffer.slice(0, breakIndex);
+        buffer = buffer.slice(breakIndex + 1);
+        breakIndex = buffer.indexOf('\n');
+        processLine(line);
+      }
+    }
+
+    // Some fetch implementations finish an SSE response without a final line
+    // terminator. Flush the decoder and parse the remaining data record so a
+    // complete assistant response is not reported as invalid.
+    buffer += decoder.decode();
+    if (!done && buffer.trim()) processLine(buffer);
+
+    const toolCalls = message.tool_calls.filter((call) => call?.function?.name);
+    if (!message.content && !toolCalls.length) throw providerError('MODEL_RESPONSE_INVALID');
+    return {
+      choices: [{ message: { ...message, tool_calls: toolCalls.length ? toolCalls : undefined } }],
+      usage,
+    };
+  } catch (error) {
+    try {
+      await reader.cancel?.();
+    } catch {
+      // Preserve the parser or reader failure when cleanup itself fails.
+    }
+    throw error;
+  }
+}
+
+async function readResponsesStream(response) {
+  const reader = response?.body?.getReader?.();
+  if (!reader) throw providerError('MODEL_RESPONSE_INVALID');
+  const decoder = new TextDecoder();
+  const output = [];
+  const functionCalls = new Map();
+  let text = '';
+  let buffer = '';
+  let size = 0;
+  let usage = null;
+  let done = false;
+  try {
+    const processLine = (rawLine) => {
+      const line = rawLine.trim();
+      if (!line.startsWith('data:')) return;
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') { done = true; return; }
+      let event;
+      try { event = JSON.parse(data); } catch { return; }
+      if (event?.error || event?.type === 'error' || event?.type === 'response.failed') {
+        const detail = event.error || event;
+        const status = inBandStreamErrorStatus(detail);
+        throw status ? statusError(status) : providerError('MODEL_UNAVAILABLE');
+      }
+      const type = event?.type || '';
+      if (type === 'response.output_text.delta') text += String(event.delta || '');
+      if (type === 'response.output_item.added' && event.item?.type === 'function_call') {
+        const item = { ...event.item, arguments: String(event.item.arguments || '') };
+        const key = String(item.call_id || item.id || event.output_index || output.length);
+        functionCalls.set(key, item);
+        if (item.id) functionCalls.set(String(item.id), item);
+        if (item.call_id) functionCalls.set(String(item.call_id), item);
+        output.push(item);
+      }
+      if (type === 'response.function_call_arguments.delta') {
+        const key = String(event.call_id || event.item_id || event.output_index || functionCalls.size);
+        let item = functionCalls.get(key);
+        if (!item) {
+          item = { type: 'function_call', call_id: event.call_id || event.item_id || key, name: event.name || '', arguments: '' };
+          functionCalls.set(key, item);
+          output.push(item);
+        }
+        item.arguments += String(event.delta || '');
+      }
+      if (type === 'response.output_item.done' && event.item?.type === 'function_call') {
+        const item = event.item;
+        const key = String(item.call_id || item.id || event.output_index || output.length);
+        const existing = functionCalls.get(key);
+        if (existing) Object.assign(existing, item, { arguments: item.arguments ?? existing.arguments });
+        else {
+          functionCalls.set(key, item);
+          output.push(item);
+        }
+      }
+      if (type === 'response.completed' || type === 'response.done') {
+        if (Array.isArray(event.response?.output)) {
+          for (const item of event.response.output) {
+            if (item?.type === 'function_call') {
+              const key = String(item.call_id || item.id || output.length);
+              const existing = functionCalls.get(key);
+              if (existing) Object.assign(existing, item);
+              else output.push(item);
+            }
+          }
+        }
+        if (event.response?.usage) usage = event.response.usage;
+        done = true;
+      }
+      if (event.usage) usage = event.usage;
+    };
+    while (!done) {
+      const step = await reader.read();
+      if (step.done) break;
+      size += step.value?.length || 0;
+      if (size > MAX_RESPONSE_BYTES) throw providerError('MODEL_RESPONSE_INVALID');
+      buffer += decoder.decode(step.value, { stream: true });
+      let breakIndex = buffer.indexOf('\n');
+      while (breakIndex >= 0) {
+        processLine(buffer.slice(0, breakIndex));
+        buffer = buffer.slice(breakIndex + 1);
+        breakIndex = buffer.indexOf('\n');
+      }
+    }
+    buffer += decoder.decode();
+    if (!done && buffer.trim()) processLine(buffer);
+    if (!text && !output.length) throw providerError('MODEL_RESPONSE_INVALID');
+    return { output: [ ...(text ? [{ type: 'message', content: [{ type: 'output_text', text }] }] : []), ...output ], usage };
+  } catch (error) {
+    try { await reader.cancel?.(); } catch { /* preserve parser failure */ }
+    throw error;
+  }
 }
 
 function ollamaAnswer(payload) {
@@ -331,15 +516,143 @@ function statusError(status) {
   return providerError('MODEL_UNAVAILABLE', status);
 }
 
-function trimHistory(messages, protocol) {
-  if (messages.length <= MAX_HISTORY_MESSAGES) return messages;
-  const initial = messages[0];
-  const tail = messages.slice(-(MAX_HISTORY_MESSAGES - 1));
-  if (protocol === 'anthropic' && tail[0]?.role === 'user' && Array.isArray(tail[0]?.content)) {
-    const preceding = messages[messages.length - MAX_HISTORY_MESSAGES];
-    if (preceding?.role === 'assistant') return [initial, preceding, ...tail].slice(-MAX_HISTORY_MESSAGES);
+function hasOpenAiToolCalls(message) {
+  return message?.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+}
+
+function hasAnthropicToolUse(message) {
+  return message?.role === 'assistant'
+    && Array.isArray(message.content)
+    && message.content.some((item) => item?.type === 'tool_use');
+}
+
+function hasAnthropicToolResult(message) {
+  return message?.role === 'user'
+    && Array.isArray(message.content)
+    && message.content.some((item) => item?.type === 'tool_result');
+}
+
+function filterAnthropicToolResults(message, toolUseIds = null) {
+  if (!hasAnthropicToolResult(message)) return message;
+  const content = message.content.filter((item) => item?.type !== 'tool_result'
+    || (toolUseIds && toolUseIds.has(String(item.tool_use_id))));
+  return content.length ? { ...message, content } : null;
+}
+
+function historyUnits(messages, protocol) {
+  const units = [];
+  let index = 1;
+  while (index < messages.length) {
+    const message = messages[index];
+    if (protocol === 'anthropic') {
+      if (hasAnthropicToolUse(message)) {
+        const group = [message];
+        const toolUseIds = new Set(message.content
+          .filter((item) => item?.type === 'tool_use' && item.id)
+          .map((item) => String(item.id)));
+        index += 1;
+        if (hasAnthropicToolResult(messages[index])) {
+          const resultMessage = filterAnthropicToolResults(messages[index], toolUseIds);
+          if (resultMessage) group.push(resultMessage);
+          index += 1;
+        }
+        units.push({ messages: group });
+        continue;
+      }
+      if (hasAnthropicToolResult(message)) {
+        const stripped = filterAnthropicToolResults(message);
+        if (stripped) units.push({ messages: [stripped] });
+        index += 1;
+        continue;
+      }
+    } else {
+      if (hasOpenAiToolCalls(message)) {
+        const group = [message];
+        const toolCallIds = new Set(message.tool_calls
+          .filter((call) => call?.id)
+          .map((call) => String(call.id)));
+        index += 1;
+        while (messages[index]?.role === 'tool') {
+          const toolResult = messages[index++];
+          if (toolResult.tool_call_id && toolCallIds.has(String(toolResult.tool_call_id))) group.push(toolResult);
+        }
+        units.push({ messages: group });
+        continue;
+      }
+      if (message?.role === 'tool') {
+        index += 1;
+        continue;
+      }
+    }
+    units.push({ messages: [message] });
+    index += 1;
   }
-  return [initial, ...tail];
+  return units;
+}
+
+function summaryTextForMessage(message, protocol) {
+  if (message?.role === 'tool') return '';
+  if (protocol === 'anthropic' && Array.isArray(message?.content)) {
+    return message.content
+      .filter((item) => item?.type === 'text')
+      .map((item) => item.text || '')
+      .join('\n');
+  }
+  return textFromContent(message?.content);
+}
+
+function summarizeHistory(messages, protocol) {
+  const toolNames = new Set();
+  const snippets = [];
+  for (const message of messages) {
+    if (message?.role === 'tool') continue;
+    if (protocol === 'anthropic' && Array.isArray(message?.content)) {
+      for (const item of message.content) {
+        if (item?.type === 'tool_use' && item.name) toolNames.add(cleanText(item.name, 80));
+      }
+    } else if (Array.isArray(message?.tool_calls)) {
+      for (const call of message.tool_calls) {
+        if (call?.function?.name) toolNames.add(cleanText(call.function.name, 80));
+      }
+    }
+    const text = cleanText(summaryTextForMessage(message, protocol), 220);
+    if (text) snippets.push(text);
+  }
+  const tools = toolNames.size ? ` Tools used: ${Array.from(toolNames).join(', ')}.` : '';
+  const notes = snippets.length ? ` Notes: ${snippets.slice(-4).join(' | ')}` : '';
+  return cleanText(`Earlier context compacted (${messages.length} messages).${tools}${notes}`, MAX_HISTORY_SUMMARY_CHARS);
+}
+
+function mergeAnthropicSummary(initial, summary) {
+  if (initial?.role !== 'user') return [initial, { role: 'user', content: summary }];
+  if (Array.isArray(initial.content)) {
+    return [{ ...initial, content: [...initial.content, { type: 'text', text: summary }] }];
+  }
+  const content = initial.content ? `${initial.content}\n\n${summary}` : summary;
+  return [{ ...initial, content }];
+}
+
+function trimHistory(messages, protocol) {
+  if (!Array.isArray(messages) || messages.length <= MAX_HISTORY_MESSAGES) return messages;
+  const initial = messages[0] || { role: 'user', content: '' };
+  const units = historyUnits(messages, protocol);
+  const available = Math.max(1, MAX_HISTORY_MESSAGES - 2);
+  const selected = [];
+  let selectedCount = 0;
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const unit = units[index];
+    const unitSize = unit.messages.length;
+    if (selected.length && selectedCount + unitSize > available) break;
+    selected.unshift(unit);
+    selectedCount += unitSize;
+  }
+  const selectedMessages = selected.flatMap((unit) => unit.messages);
+  const selectedSet = new Set(selectedMessages);
+  const droppedMessages = messages.slice(1).filter((message) => !selectedSet.has(message));
+  if (!droppedMessages.length) return [initial, ...selectedMessages];
+  const summary = summarizeHistory(droppedMessages, protocol);
+  if (protocol === 'anthropic') return [...mergeAnthropicSummary(initial, summary), ...selectedMessages];
+  return [initial, { role: 'user', content: summary }, ...selectedMessages];
 }
 
 function serializeToolResult(value) {
@@ -367,6 +680,38 @@ function createRequest(protocol, { model, systemPrompt, messages, tools, stream 
       tools: providerTools(protocol, tools),
     };
   }
+  if (protocol === 'openai-responses') {
+    const input = [
+      { role: 'developer', content: cleanText(systemPrompt, 32_000) },
+      ...messages.flatMap((message) => {
+        if (message?.role === 'tool') return [{
+          type: 'function_call_output',
+          call_id: String(message.tool_call_id || ''),
+          output: String(message.content || ''),
+        }];
+        if (message?.role === 'assistant' && Array.isArray(message.tool_calls)) {
+          const calls = message.tool_calls.map((call) => ({
+            type: 'function_call',
+            call_id: String(call.id || ''),
+            name: String(call.function?.name || ''),
+            arguments: String(call.function?.arguments || '{}'),
+          }));
+          if (message.content) calls.push({ role: 'assistant', content: message.content });
+          return calls;
+        }
+        if (message?.role === 'system') return [{ role: 'developer', content: message.content || '' }];
+        return [{ role: message?.role || 'user', content: message?.content || '' }];
+      }),
+    ];
+    return {
+      model,
+      input,
+      tools: providerTools('openai-responses', tools),
+      tool_choice: 'auto',
+      max_output_tokens: 8192,
+      ...(stream ? { stream: true } : {}),
+    };
+  }
   const normalizedMessages = [
     { role: 'system', content: cleanText(systemPrompt, 32_000) },
     ...messages,
@@ -384,7 +729,7 @@ function createRequest(protocol, { model, systemPrompt, messages, tools, stream 
 
 async function callProvider({ connection, apiKey, systemPrompt, messages, tools, fetchImpl, timeoutMs, signal, extraHeaders, stream = false }) {
   const protocol = protocolFor(connection);
-  const streaming = Boolean(stream) && protocol === 'openai';
+  const streaming = Boolean(stream) && ['openai', 'openai-responses'].includes(protocol);
   const endpoint = providerEndpoint(connection);
   const controller = new AbortController();
   const onAbort = () => controller.abort();
@@ -415,11 +760,16 @@ async function callProvider({ connection, apiKey, systemPrompt, messages, tools,
       if (requestId) error.requestId = requestId;
       throw error;
     }
-    if (streaming) return { protocol, requestId, ...openAiAnswer(await readOpenAiStream(response)) };
+    if (streaming) {
+      const payload = protocol === 'openai-responses'
+        ? await readResponsesStream(response)
+        : await readOpenAiStream(response);
+      return { protocol, requestId, ...(protocol === 'openai-responses' ? responsesAnswer(payload) : openAiAnswer(payload)) };
+    }
     const payload = await responseJson(response);
     if (protocol === 'anthropic') return { protocol, requestId, ...anthropicAnswer(payload) };
     if (protocol === 'ollama') return { protocol, requestId, ...ollamaAnswer(payload) };
-    return { protocol, requestId, ...openAiAnswer(payload) };
+    return { protocol, requestId, ...(protocol === 'openai-responses' ? responsesAnswer(payload) : openAiAnswer(payload)) };
   } catch (error) {
     if (error?.code?.startsWith?.('MODEL_')) {
       if (requestId && !error.requestId) error.requestId = requestId;
@@ -433,6 +783,27 @@ async function callProvider({ connection, apiKey, systemPrompt, messages, tools,
   }
 }
 
+function retryableProviderTransportError(error, signal) {
+  return !signal?.aborted && [
+    'MODEL_UNAVAILABLE',
+    'MODEL_NETWORK_ERROR',
+    'MODEL_REQUEST_TIMEOUT',
+  ].includes(error?.code);
+}
+
+async function callProviderWithRetry({ maxAttempts = 1, signal, onFailure, ...options }) {
+  const attempts = Math.max(1, Math.min(Number(maxAttempts) || 1, 5));
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await callProvider({ ...options, signal });
+    } catch (error) {
+      onFailure?.(error);
+      if (attempt >= attempts || !retryableProviderTransportError(error, signal)) throw error;
+    }
+  }
+  throw providerError('MODEL_NETWORK_ERROR');
+}
+
 function appendToolResults(protocol, messages, answer, results) {
   if (protocol === 'anthropic') {
     messages.push(answer.assistant);
@@ -440,6 +811,17 @@ function appendToolResults(protocol, messages, answer, results) {
       role: 'user',
       content: results.map((result) => ({ type: 'tool_result', tool_use_id: result.id, content: result.content })),
     });
+    return;
+  }
+  if (protocol === 'openai-responses') {
+    const output = Array.isArray(answer.assistant?.output) ? answer.assistant.output : [];
+    for (const item of output) {
+      if (item?.type === 'function_call') messages.push({
+        role: 'assistant',
+        tool_calls: [{ id: item.call_id || item.id, function: { name: item.name, arguments: item.arguments || '{}' } }],
+      });
+    }
+    for (const result of results) messages.push({ role: 'tool', tool_call_id: result.id, content: result.content });
     return;
   }
   messages.push({ ...answer.assistant, role: 'assistant' });
@@ -461,6 +843,8 @@ async function runDirectAgent({
   extraHeaders,
   stream = false,
   maxTurns = MAX_TURNS,
+  maxProviderAttempts = 1,
+  researchToolExecutor,
 } = {}) {
   if (typeof fetchImpl !== 'function' || typeof executeTool !== 'function' || !connection.model || !connection.baseUrl) {
     throw providerError('MODEL_CONFIGURATION_INVALID');
@@ -476,7 +860,7 @@ async function runDirectAgent({
     if (signal?.aborted) throw providerError('MODEL_REQUEST_TIMEOUT');
     let answer;
     try {
-      answer = await callProvider({
+      answer = await callProviderWithRetry({
         connection,
         apiKey,
         systemPrompt,
@@ -487,6 +871,10 @@ async function runDirectAgent({
         signal,
         extraHeaders,
         stream,
+        maxAttempts: maxProviderAttempts,
+        onFailure: (error) => {
+          if (error?.requestId && !requestIds.includes(error.requestId)) requestIds.push(error.requestId);
+        },
       });
     } catch (error) {
       if (error?.requestId && !requestIds.includes(error.requestId)) requestIds.push(error.requestId);
@@ -523,6 +911,12 @@ async function runDirectAgent({
         value = { ok: false, error: 'TOOL_CALL_BATCH_LIMIT' };
       } else if (!allowedTools.has(call.name)) {
         value = { ok: false, error: 'TOOL_NOT_ALLOWED' };
+      } else if (call.name === RESEARCH_TOOL_NAME && typeof researchToolExecutor === 'function') {
+        try {
+          value = await researchToolExecutor(call.input);
+        } catch (error) {
+          value = { ok: false, error: cleanText(error?.code || 'TOOL_EXECUTION_FAILED', 100) };
+        }
       } else {
         try {
           value = await executeTool({ name: call.name, input: call.input });

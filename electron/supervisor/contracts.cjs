@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 
 const SCHEMA_VERSION = 1;
+const ARTIFACT_CONTRACT_VERSION = 1;
 const PIPELINE_STAGES = Object.freeze(['analysis', 'solving', 'paper', 'review']);
 const STAGE_ROLES = Object.freeze({
   analysis: 'analyst',
@@ -14,8 +15,10 @@ const DEFAULT_AGENT_POLICY = Object.freeze({
   supervisorPlanning: true,
   autoResume: true,
   sourceProtection: true,
-  crossRoleFallback: true,
-  maxAttemptsPerModel: 2,
+  crossRoleFallback: false,
+  // A streamed upstream 502 can arrive after the relay has committed HTTP 200.
+  // Keep reconnecting long enough for the upstream account pool to rotate.
+  maxAttemptsPerModel: 5,
   maxAttemptsPerRun: 12,
   retryBackoffSeconds: 3,
   stageTimeoutMinutes: 90,
@@ -64,8 +67,8 @@ function normalizeAgentPolicy(raw = {}) {
     supervisorPlanning: raw.supervisorPlanning !== false,
     autoResume: raw.autoResume !== false,
     sourceProtection: raw.sourceProtection !== false,
-    crossRoleFallback: raw.crossRoleFallback !== false,
-    maxAttemptsPerModel: boundedInteger(raw.maxAttemptsPerModel, DEFAULT_AGENT_POLICY.maxAttemptsPerModel, 1, 4),
+    crossRoleFallback: raw.crossRoleFallback === true,
+    maxAttemptsPerModel: boundedInteger(raw.maxAttemptsPerModel, DEFAULT_AGENT_POLICY.maxAttemptsPerModel, 1, 5),
     maxAttemptsPerRun: boundedInteger(raw.maxAttemptsPerRun, DEFAULT_AGENT_POLICY.maxAttemptsPerRun, 4, 24),
     retryBackoffSeconds: boundedInteger(raw.retryBackoffSeconds, DEFAULT_AGENT_POLICY.retryBackoffSeconds, 0, 60),
     stageTimeoutMinutes: boundedInteger(raw.stageTimeoutMinutes, DEFAULT_AGENT_POLICY.stageTimeoutMinutes, 5, 240),
@@ -112,6 +115,7 @@ function createRunState({ runId = crypto.randomUUID(), stages = PIPELINE_STAGES,
       role: stageRole(stage),
       status: 'pending',
       attemptCount: 0,
+      recoveryAttemptCount: 0,
       attempts: [],
       artifactRefs: [],
       lastError: null,
@@ -171,7 +175,19 @@ function isTerminalStatus(status) {
   return ['completed', 'cancelled'].includes(status);
 }
 
+function resumeOptionsForState(state, policy = state?.policy) {
+  if (!state || typeof state !== 'object') return null;
+  if (['created', 'running', 'retrying'].includes(state.status)) {
+    return { resume: true, forceResume: false };
+  }
+  if (state.status === 'paused' && normalizeAgentPolicy(policy).autoResume) {
+    return { resume: true, forceResume: true };
+  }
+  return null;
+}
+
 module.exports = {
+  ARTIFACT_CONTRACT_VERSION,
   DEFAULT_AGENT_POLICY,
   DEFAULT_BUDGET,
   PIPELINE_STAGES,
@@ -183,6 +199,7 @@ module.exports = {
   isTerminalStatus,
   normalizeAgentPolicy,
   normalizeBudget,
+  resumeOptionsForState,
   safeSummary,
   stageRole,
 };

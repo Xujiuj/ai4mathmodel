@@ -8,17 +8,21 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { desktopApi, isDesktopRuntime } from './api.js';
+import { APP_VERSION, desktopApi, isDesktopRuntime } from './api.js';
 import { ConfirmModal, ConnectionSettingsModal, CreateProjectModal, HostedAccountModal } from './components/Modals.jsx';
 import { PaperCommandBar, PaperWorkspace } from './components/PaperWorkspace.jsx';
 import { RunDrawer } from './components/RunDrawer.jsx';
 import { AppSidebar, EmptyProject, OutlinePanel, ProjectSummary, UtilitySidebar } from './components/Shell.jsx';
 import { StageWorkspace } from './components/StageWorkspace.jsx';
+import { IMAGE_PREVIEW_EXTENSIONS } from './fileTypes.js';
 import { DEFAULT_SETTINGS, modelSummary } from './modelConfig.js';
+import { mergeActiveRuns, projectIsRunning, runtimePreflight, sameProjectRoot } from './runState.js';
 
 const TEXT_EXTENSIONS = new Set(['.tex', '.md', '.py', '.yaml', '.yml', '.bib', '.json', '.csv', '.txt', '.log', '.js', '.jsx', '.ts', '.tsx', '.r', '.m', '.c', '.cc', '.cpp', '.h', '.hpp', '.java', '.sh', '.ps1', '.bat', '.cmd', '.toml', '.ini', '.cfg', '.conf', '.xml', '.html', '.css', '.sql', '.rst']);
 const SPREADSHEET_EXTENSIONS = new Set(['.csv', '.xlsx']);
 const EXTERNAL_ONLY_EXTENSIONS = new Set(['.doc', '.docx', '.xls', '.ppt', '.pptx', '.pages', '.numbers']);
+const PROBLEM_DROP_EXTENSIONS = new Set(['.txt', '.md', '.pdf', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.zip', '.rar', '.7z', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx']);
+const TEMPLATE_DROP_EXTENSIONS = new Set(['.tex', '.cls', '.sty', '.bst', '.bib', '.ltx']);
 
 function hasPipelineInputs(projectSnapshot) {
   const files = projectSnapshot?.files || [];
@@ -28,6 +32,22 @@ function hasPipelineInputs(projectSnapshot) {
 
 function isTextPreview(file) {
   return Boolean(file?.previewKind === 'text' || TEXT_EXTENSIONS.has(file?.ext));
+}
+
+function classifyDroppedKind(file) {
+  const name = String(file?.name || '').toLowerCase();
+  const ext = String(file?.ext || '').toLowerCase();
+  if (PROBLEM_DROP_EXTENSIONS.has(ext) || /problem|question|data|赛题|题目|附件/.test(name)) return 'problem';
+  if (TEMPLATE_DROP_EXTENSIONS.has(ext) || /template|latex|paper|report|模板/.test(name)) return 'template';
+  return 'problem';
+}
+
+function splitDroppedFiles(files) {
+  const buckets = { problem: [], template: [] };
+  for (const file of Array.isArray(files) ? files : []) {
+    buckets[classifyDroppedKind(file)].push(file);
+  }
+  return buckets;
 }
 
 function matchingFile(files, file, extension) {
@@ -48,8 +68,21 @@ function nowLabel(timestamp = Date.now()) {
   return new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false });
 }
 
+function historyLogs(result) {
+  const events = Array.isArray(result) ? result : result?.events;
+  return (Array.isArray(events) ? events : [])
+    .filter((event) => ['pipeline-progress', 'stage-progress', 'pipeline-complete'].includes(event?.type))
+    .map((event) => ({
+      at: nowLabel(event.at),
+      level: event.status === 'completed' ? 'success' : event.status === 'recovering' || event.status === 'cancelled' || event.status === 'paused' ? 'warning' : 'info',
+      text: String(event.message || ''),
+      seq: Number(event.seq) || undefined,
+    }));
+}
+
 function formatSpendAmount(value, currency = 'CNY') {
   const code = String(currency || 'CNY').toUpperCase();
+  if (code === 'PTS') return `${Math.round(Number(value || 0)).toLocaleString('zh-CN')} 积分`;
   return `${code === 'CNY' ? '¥' : `${code} `}${Number(value || 0).toFixed(2)}`;
 }
 
@@ -57,6 +90,10 @@ function mergeSettings(stored = {}) {
   return {
     ...DEFAULT_SETTINGS,
     ...stored,
+    agentPolicy: {
+      ...DEFAULT_SETTINGS.agentPolicy,
+      ...(stored.agentPolicy || {}),
+    },
     connections: Object.fromEntries(Object.keys(DEFAULT_SETTINGS.connections).map((key) => [key, {
       ...DEFAULT_SETTINGS.connections[key],
       ...stored.connections?.[key],
@@ -80,7 +117,7 @@ function StatusBar({ project, running, appInfo, settings, activeStage, spend }) 
       ) : null}
       <span className="status-model"><Cpu size={12} />{modelSummary(settings, activeStage)}</span>
       <span className={running ? 'status-running' : 'status-ready'}>{running ? <CircleAlert size={12} /> : <CheckCircle2 size={12} />}{running ? '任务运行中' : '项目就绪'}</span>
-      <span>v{appInfo?.version || '0.1.0'}</span>
+      <span>v{appInfo?.version || APP_VERSION}</span>
     </footer>
   );
 }
@@ -109,11 +146,14 @@ export function App() {
   const [spreadsheet, setSpreadsheet] = useState(null);
   const [pdfUrl, setPdfUrl] = useState('');
   const [logs, setLogs] = useState([]);
+  const [runs, setRuns] = useState([]);
+  const [selectedRunId, setSelectedRunId] = useState('');
+  const [historyLoading, setHistoryLoading] = useState(false);
   // Keep activity available without letting it compete with the paper canvas.
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState('logs');
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
-  const [running, setRunning] = useState(false);
+  const [localRuns, setLocalRuns] = useState([]);
   const [activeRuns, setActiveRuns] = useState([]);
   const [spend, setSpend] = useState({ cost: 0, tokens: 0, pricingUnknown: false, authoritative: false, balance: null, currency: 'CNY' });
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -127,14 +167,37 @@ export function App() {
   const [projectLoadError, setProjectLoadError] = useState('');
   const loadRequestRef = useRef(0);
   const fileRequestRef = useRef(0);
+  const historyRequestRef = useRef(0);
+  const runCatalogRequestRef = useRef(0);
   const activeProjectRef = useRef(null);
+  const selectedRunIdRef = useRef('');
   const loadedProjectRootRef = useRef('');
   const toastTimerRef = useRef(null);
+  const displayRuns = mergeActiveRuns(activeRuns, localRuns);
+  const running = projectIsRunning(displayRuns, activeProject?.root);
+
+  const markLocalRun = useCallback((root, stage) => {
+    if (!root) return;
+    setLocalRuns((items) => mergeActiveRuns(items, [{ root, stage: stage || 'analysis', startedAt: Date.now() }]));
+  }, []);
+
+  const clearLocalRun = useCallback((root) => {
+    if (!root) return;
+    setLocalRuns((items) => items.filter((item) => !sameProjectRoot(item.root, root)));
+  }, []);
 
   useEffect(() => {
     activeProjectRef.current = activeProject;
     fileRequestRef.current += 1;
-  }, [activeProject]);
+    historyRequestRef.current += 1;
+    runCatalogRequestRef.current += 1;
+    selectedRunIdRef.current = '';
+    setHistoryLoading(false);
+  }, [activeProject?.root]);
+
+  useEffect(() => {
+    selectedRunIdRef.current = selectedRunId;
+  }, [selectedRunId]);
 
   const notify = useCallback((message, tone = 'default') => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -182,14 +245,6 @@ export function App() {
     }).catch((error) => {
       if (!cancelled) notify(error.message || '初始化工作区失败。', 'error');
     });
-    desktopApi.activeRun(activeProjectRef.current?.root).then((active) => {
-      if (cancelled) return;
-      if (active) {
-        setRunning(true);
-        setDrawerOpen(true);
-        setLogs((items) => [...items, { at: nowLabel(active.startedAt), level: 'info', text: `已连接正在执行的 ${active.stage} 任务` }]);
-      }
-    }).catch(() => {});
     return () => { cancelled = true; };
   }, [notify, refreshProjects]);
 
@@ -210,6 +265,9 @@ export function App() {
     if (!project) {
       loadedProjectRootRef.current = '';
       resetWorkspace();
+      setLogs([]);
+      setRuns([]);
+      setSelectedRunId('');
       setProjectLoading(false);
       setProjectLoadError('');
       return null;
@@ -219,10 +277,13 @@ export function App() {
     setProjectLoading(true);
     setProjectLoadError('');
     resetWorkspace();
+    if (projectChanged) setLogs([]);
     try {
-      const [next, savedCheckpoints] = await Promise.all([
+      const [next, savedCheckpoints, savedHistory, savedRuns] = await Promise.all([
         desktopApi.snapshot(project.root),
         desktopApi.listCheckpoints(project.root),
+        projectChanged ? desktopApi.runHistory(project.root, { limit: 2000 }).catch(() => null) : Promise.resolve(null),
+        desktopApi.listRuns(project.root, { limit: 100 }).catch(() => []),
       ]);
       if (requestId !== loadRequestRef.current) return null;
 
@@ -232,12 +293,18 @@ export function App() {
       const urlOptional = (file) => file
         ? desktopApi.fileUrl(file.path).catch(() => '')
         : Promise.resolve('');
-      const initialFile = next.paper?.pdf || next.paper?.tex || next.files?.[0] || null;
+      const markdownPreferred = next.profile?.paperFormat === 'markdown';
+      const preferredSource = markdownPreferred
+        ? next.paper?.markdown || next.paper?.tex
+        : next.paper?.tex;
+      const initialFile = markdownPreferred
+        ? preferredSource || next.paper?.pdf || next.files?.[0] || null
+        : next.paper?.pdf || preferredSource || next.files?.[0] || null;
       const initialSource = initialFile?.ext === '.pdf'
-        ? matchingFile(next.files || [], initialFile, '.tex')
-        : initialFile?.ext === '.tex' ? initialFile : null;
-      const initialPdf = initialFile?.ext === '.tex'
-        ? matchingFile(next.files || [], initialFile, '.pdf')
+        ? preferredSource || matchingFile(next.files || [], initialFile, '.tex')
+        : ['.tex', '.md'].includes(initialFile?.ext) ? initialFile : null;
+      const initialPdf = ['.tex', '.md'].includes(initialFile?.ext)
+        ? next.paper?.pdf || matchingFile(next.files || [], initialFile, '.pdf')
         : initialFile?.ext === '.pdf' ? initialFile : null;
       const [nextLatex, nextPdfUrl] = await Promise.all([
         readOptional(initialSource),
@@ -247,13 +314,21 @@ export function App() {
 
       setSnapshot(next);
       setCheckpoints(savedCheckpoints);
+      setRuns(Array.isArray(savedRuns) ? savedRuns : []);
+      setSelectedRunId((current) => (
+        (Array.isArray(savedRuns) && savedRuns.some((item) => item.runId === current))
+          ? current
+          : savedRuns?.[0]?.runId || ''
+      ));
       setSelectedFile(initialFile);
       setCompareSourceFile(initialSource);
       setLatex(nextLatex);
       setPdfUrl(nextPdfUrl);
       if (projectChanged) {
+        const hydratedLogs = historyLogs(savedHistory);
+        if (hydratedLogs.length) setLogs((current) => [...hydratedLogs, ...current]);
         const detectedStage = next.stages?.find((stage) => stage.uiStatus === 'active')?.key
-          || (next.paper?.tex || next.paper?.pdf ? 'paper' : next.stages?.[0]?.key || 'analysis');
+          || (next.paper?.markdown || next.paper?.tex || next.paper?.pdf ? 'paper' : next.stages?.[0]?.key || 'analysis');
         setActiveStage(detectedStage);
       }
       loadedProjectRootRef.current = project.root;
@@ -267,6 +342,54 @@ export function App() {
       if (requestId === loadRequestRef.current) setProjectLoading(false);
     }
   }, [resetWorkspace]);
+
+  const refreshRunCatalog = useCallback(async (project = activeProject) => {
+    const requestId = ++runCatalogRequestRef.current;
+    const projectRoot = project?.root || '';
+    const isCurrentRequest = () => requestId === runCatalogRequestRef.current
+      && projectRoot === (activeProjectRef.current?.root || '');
+    try {
+      if (!projectRoot) {
+        if (!isCurrentRequest()) return [];
+        setRuns([]);
+        setSelectedRunId('');
+        return [];
+      }
+      const items = await desktopApi.listRuns(projectRoot, { limit: 100 });
+      if (!isCurrentRequest()) return [];
+      const nextRuns = Array.isArray(items) ? items : [];
+      setRuns(nextRuns);
+      setSelectedRunId((current) => nextRuns.some((item) => item.runId === current) ? current : nextRuns[0]?.runId || '');
+      return nextRuns;
+    } catch (error) {
+      if (!isCurrentRequest()) return [];
+      throw error;
+    } finally {
+      if (isCurrentRequest()) setHistoryLoading(false);
+    }
+  }, [activeProject]);
+
+  const selectHistoricalRun = useCallback(async (runId) => {
+    if (!activeProject?.root || !runId) return;
+    const projectRoot = activeProject.root;
+    const requestId = ++historyRequestRef.current;
+    const isCurrentRequest = () => requestId === historyRequestRef.current
+      && projectRoot === activeProjectRef.current?.root
+      && selectedRunIdRef.current === runId;
+    selectedRunIdRef.current = runId;
+    setSelectedRunId(runId);
+    setHistoryLoading(true);
+    try {
+      const history = await desktopApi.runHistory(projectRoot, { runId, limit: 2000 });
+      if (!isCurrentRequest()) return;
+      setLogs(historyLogs(history));
+    } catch (error) {
+      if (!isCurrentRequest()) return;
+      notify(error.message || '无法读取所选运行记录。', 'error');
+    } finally {
+      if (isCurrentRequest()) setHistoryLoading(false);
+    }
+  }, [activeProject, notify]);
 
   useEffect(() => {
     loadProject(activeProject).catch((error) => notify(error.message, 'error'));
@@ -286,21 +409,29 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [running]);
+  }, []);
 
   useEffect(() => {
     return desktopApi.onRunEvent((event) => {
       const currentRoot = activeProjectRef.current?.root;
-      if (event.root && currentRoot && event.root !== currentRoot) return;
+      const eventRoot = event.root || currentRoot;
+      if (eventRoot && (event.type === 'pipeline-progress' || event.type === 'stage-progress')) {
+        setActiveRuns((items) => mergeActiveRuns(items, [{ root: eventRoot, stage: event.stage, startedAt: event.at }]));
+      }
+      if (eventRoot && event.type === 'pipeline-complete') {
+        setActiveRuns((items) => items.filter((item) => !sameProjectRoot(item.root, eventRoot)));
+        clearLocalRun(eventRoot);
+      }
+      if (event.root && currentRoot && !sameProjectRoot(event.root, currentRoot)) return;
       if (event.type === 'pipeline-progress') {
-        setRunning(true);
+        markLocalRun(eventRoot, event.stage);
         setActiveStage(event.stage || 'analysis');
         setDrawerOpen(true);
         setDrawerTab('logs');
         setLogs((items) => [...items, { at: nowLabel(event.at), level: event.status === 'recovering' ? 'warning' : 'info', text: event.message }]);
       }
       if (event.type === 'stage-progress') {
-        setRunning(true);
+        markLocalRun(eventRoot, event.stage);
         if (event.stage) setActiveStage(event.stage);
         setDrawerOpen(true);
         setDrawerTab('logs');
@@ -318,17 +449,16 @@ export function App() {
         });
       }
       if (event.type === 'pipeline-complete') {
-        setRunning(false);
         if (event.status === 'completed') setActiveStage('paper');
         setLogs((items) => [...items, { at: nowLabel(event.at), level: event.status === 'completed' ? 'success' : 'warning', text: event.message }]);
         if (activeProject) loadProject(activeProject).catch(() => {});
       }
     });
-  }, [activeProject, loadProject]);
+  }, [activeProject, clearLocalRun, loadProject, markLocalRun]);
 
   const runPaperAction = useCallback(async (action) => {
     if (!activeProject || running) return;
-    setRunning(true);
+    markLocalRun(activeProject.root, action === 'compile' ? 'compile' : 'review');
     try {
       const result = action === 'compile'
         ? await desktopApi.compilePaper(activeProject.root)
@@ -340,21 +470,42 @@ export function App() {
     } catch (error) {
       notify(error.message || '论文操作未完成。', 'error');
     } finally {
-      setRunning(false);
+      clearLocalRun(activeProject.root);
     }
-  }, [activeProject, loadProject, notify, running]);
+  }, [activeProject, clearLocalRun, loadProject, markLocalRun, notify, running]);
 
   const runFullPipeline = useCallback(async (project = activeProject, projectSnapshot = snapshot) => {
-    if (!project || running) return;
+    if (!project || projectIsRunning(displayRuns, project.root)) return;
     if (!hasPipelineInputs(projectSnapshot)) {
       notify('请先同时添加赛题文件和论文模板。', 'error');
       return;
+    }
+    if (isDesktopRuntime) {
+      try {
+        const latestInfo = await desktopApi.appInfo();
+        setAppInfo(latestInfo);
+        const preflight = runtimePreflight(latestInfo?.runtime, ['analysis', 'solving', 'paper', 'review']);
+        if (!preflight.ok) {
+          const missing = preflight.missing.map((tool) => tool === 'tectonic' ? 'LaTeX' : 'Python').join('、');
+          notify(`缺少运行组件：${missing}。请先在设置中完成安装。`, 'error');
+          setModal('settings');
+          return;
+        }
+      } catch (error) {
+        notify(error.message || '无法确认本地运行组件。', 'error');
+        return;
+      }
     }
     if (settings.mode === 'hosted' && isDesktopRuntime) {
       try {
         const account = await desktopApi.getAccount();
         if (!account.configured) {
           notify('当前版本未配置托管服务。', 'error');
+          setModal('account');
+          return;
+        }
+        if (account.service?.available === false) {
+          notify('托管服务当前不可用，请稍后重试。', 'error');
           setModal('account');
           return;
         }
@@ -370,13 +521,13 @@ export function App() {
       }
     }
     const modelsReady = settings.mode === 'hosted'
-      || ['reasoning', 'writing'].every((key) => settings.connections?.[key]?.baseUrl && settings.connections?.[key]?.model);
+      || ['coordinator', 'modeler', 'coder', 'writer'].every((key) => settings.connections?.[key]?.baseUrl && settings.connections?.[key]?.model);
     if (!modelsReady) {
-      notify('请先完成推理与代码模型、文本模型配置。', 'error');
+      notify('请先完成总控、建模、编程和写作模型配置。', 'error');
       setModal('settings');
       return;
     }
-    setRunning(true);
+    markLocalRun(project.root, 'analysis');
     setActiveStage('analysis');
     setDrawerOpen(true);
     setDrawerTab('logs');
@@ -384,30 +535,41 @@ export function App() {
       const result = await desktopApi.runFullPipeline(project.root);
       if (result?.status === 'paused') notify('流程暂时无法继续，请检查模型连接后重试。', 'error');
     } catch (error) {
-      setRunning(false);
       notify(error.message || '完整流程启动失败。', 'error');
+    } finally {
+      clearLocalRun(project.root);
     }
-  }, [activeProject, notify, running, settings, snapshot]);
+  }, [activeProject, activeRuns, clearLocalRun, localRuns, markLocalRun, notify, settings, snapshot]);
 
   const stopStage = async () => {
     if (!activeProject?.root) return;
-    await desktopApi.stopStage(activeProject.root);
-    notify('已请求停止，当前进度将安全保存。');
+    try {
+      await desktopApi.stopStage(activeProject.root);
+      notify('已请求停止，当前进度将安全保存。');
+    } catch (error) {
+      notify(error.message || '停止任务失败，请重试。', 'error');
+    }
   };
 
   const saveDocument = useCallback(async () => {
-    const target = selectedFile && isTextPreview(selectedFile) ? selectedFile : compareSourceFile || snapshot?.paper?.tex;
+    const target = selectedFile && isTextPreview(selectedFile)
+      ? selectedFile
+      : compareSourceFile || (snapshot?.profile?.paperFormat === 'markdown' ? snapshot?.paper?.markdown : null) || snapshot?.paper?.tex;
     if (!target) return notify('当前没有可保存的文本文件。', 'error');
     await desktopApi.writeFile(target.path, latex);
     notify(`${target.name} 已保存`, 'success');
     return target;
-  }, [compareSourceFile, latex, notify, selectedFile, snapshot?.paper?.tex]);
+  }, [compareSourceFile, latex, notify, selectedFile, snapshot?.paper?.markdown, snapshot?.paper?.tex, snapshot?.profile?.paperFormat]);
+
+  const reportSaveError = useCallback((error) => {
+    notify(error?.message || '文件保存失败，请检查权限和磁盘空间。', 'error');
+  }, [notify]);
 
   useEffect(() => {
     const shortcuts = (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
-        saveDocument();
+        void saveDocument().catch(reportSaveError);
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') {
         event.preventDefault();
@@ -416,7 +578,7 @@ export function App() {
     };
     window.addEventListener('keydown', shortcuts);
     return () => window.removeEventListener('keydown', shortcuts);
-  }, [runPaperAction, saveDocument]);
+  }, [reportSaveError, runPaperAction, saveDocument]);
 
   const selectFile = async (file) => {
     if (!file) return;
@@ -435,8 +597,11 @@ export function App() {
       setDocumentView('preview');
     } else if (TEXT_EXTENSIONS.has(file.ext)) {
       setSelectedFile({ ...file, previewKind: 'text' });
-      const pairedPdf = file.ext === '.tex' ? matchingFile(snapshot?.files || [], file, '.pdf') : null;
-      setCompareSourceFile(file.ext === '.tex' ? file : null);
+      const pairedPdf = ['.tex', '.md'].includes(file.ext)
+        ? matchingFile(snapshot?.files || [], file, '.pdf')
+          || ([snapshot?.paper?.tex?.path, snapshot?.paper?.markdown?.path].includes(file.path) ? snapshot?.paper?.pdf : null)
+        : null;
+      setCompareSourceFile(['.tex', '.md'].includes(file.ext) ? file : null);
       try {
         const content = await desktopApi.readFile(file.path);
         if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setLatex(content);
@@ -448,26 +613,29 @@ export function App() {
           const url = await desktopApi.fileUrl(pairedPdf.path);
           if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setPdfUrl(url || '');
         } catch { if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setPdfUrl(''); }
-      } else if (file.ext === '.tex') {
+      } else if (['.tex', '.md'].includes(file.ext)) {
         setPdfUrl('');
       }
       setDocumentView('source');
-    } else if (['.png', '.jpg', '.jpeg', '.webp'].includes(file.ext)) {
+    } else if (IMAGE_PREVIEW_EXTENSIONS.has(file.ext)) {
       try {
         const url = await desktopApi.fileUrl(file.path);
         if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setFigureUrl(url || '');
       } catch { if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setFigureUrl(''); }
       setDocumentView('preview');
     } else if (file.ext === '.pdf') {
-      const pairedTex = matchingFile(snapshot?.files || [], file, '.tex');
-      setCompareSourceFile(pairedTex);
+      const pairedSource = matchingFile(snapshot?.files || [], file, snapshot?.profile?.paperFormat === 'markdown' ? '.md' : '.tex')
+        || (file.path === snapshot?.paper?.pdf?.path
+          ? (snapshot?.profile?.paperFormat === 'markdown' ? snapshot?.paper?.markdown || snapshot?.paper?.tex : snapshot?.paper?.tex)
+          : null);
+      setCompareSourceFile(pairedSource);
       try {
         const url = await desktopApi.fileUrl(file.path);
         if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setPdfUrl(url || '');
       } catch { if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setPdfUrl(''); }
-      if (pairedTex) {
+      if (pairedSource) {
         try {
-          const content = await desktopApi.readFile(pairedTex.path);
+          const content = await desktopApi.readFile(pairedSource.path);
           if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setLatex(content);
         } catch { if (requestId === fileRequestRef.current && projectRoot === activeProjectRef.current?.root) setLatex(''); }
       }
@@ -496,8 +664,22 @@ export function App() {
 
   const openExternal = async (file) => {
     if (!file) return;
-    const error = await desktopApi.openPath(file.path);
-    if (error) notify(error, 'error');
+    try {
+      const error = await desktopApi.openPath(file.path);
+      if (error) notify(error, 'error');
+    } catch (error) {
+      notify(error.message || '无法使用系统程序打开文件。', 'error');
+    }
+  };
+
+  const revealOutput = async (file) => {
+    if (!file) return;
+    try {
+      const error = await desktopApi.revealPath(file.path);
+      if (error) notify(error, 'error');
+    } catch (error) {
+      notify(error.message || '无法在文件夹中显示输出文件。', 'error');
+    }
   };
 
   const addProject = async () => {
@@ -511,9 +693,9 @@ export function App() {
     }
   };
 
-  const createProject = async (name) => {
+  const createProject = async (name, profile, problem = {}) => {
     try {
-      const project = await desktopApi.createProject(name);
+      const project = await desktopApi.createProject(name, profile, problem);
       if (!project) return;
       setModal(null);
       await refreshProjects(project.id);
@@ -544,14 +726,25 @@ export function App() {
   const importDroppedFiles = async (files) => {
     if (!activeProject || !files?.length) return;
     try {
-      const imported = await desktopApi.importDroppedFiles(activeProject.root, 'problem', files);
-      if (imported?.length) {
+      const buckets = splitDroppedFiles(files);
+      const imported = [];
+      if (buckets.problem.length) {
+        imported.push(...await desktopApi.importDroppedFiles(activeProject.root, 'problem', buckets.problem));
+      }
+      if (buckets.template.length) {
+        imported.push(...await desktopApi.importDroppedFiles(activeProject.root, 'template', buckets.template));
+      }
+      if (imported.length) {
         const next = await loadProject(activeProject);
         if (hasPipelineInputs(next)) {
-          notify(`已导入 ${imported.length} 个文件，赛题与模板齐全，开始完整流程。`, 'success');
+          notify(`已导入 ${buckets.problem.length} 个赛题文件和 ${buckets.template.length} 个模板文件，赛题与模板齐全，开始完整流程。`, 'success');
           runFullPipeline(activeProject, next);
+        } else if (buckets.template.length && !buckets.problem.length) {
+          notify(`已导入 ${buckets.template.length} 个模板文件，请继续添加赛题文件。`, 'success');
+        } else if (buckets.problem.length && !buckets.template.length) {
+          notify(`已导入 ${buckets.problem.length} 个赛题文件，请继续添加论文模板。`, 'success');
         } else {
-          notify(`已导入 ${imported.length} 个赛题文件，请继续添加论文模板。`, 'success');
+          notify(`已导入 ${imported.length} 个输入文件，请继续补齐剩余材料。`, 'success');
         }
       } else {
         notify('未导入文件，请使用“选择文件”重试。', 'error');
@@ -561,13 +754,7 @@ export function App() {
     }
   };
 
-  const handleStageFile = async (hint) => {
-    if (!hint) return addInputs('problem');
-    const token = String(hint).toLowerCase().replace(/[^a-z0-9_.-]/g, '');
-    const file = snapshot?.files?.find((item) => item.name.toLowerCase() === token || item.name.toLowerCase().includes(token) || item.relative.toLowerCase().includes(token));
-    if (file) return openWorkspaceFile(file);
-    notify(`尚未找到“${hint}”，完成求解后会在成果目录中显示。`);
-  };
+  const pickStageInputs = async (kind = 'problem') => addInputs(kind === 'template' ? 'template' : 'problem');
 
   const createCheckpoint = async (label = `手动检查点 ${nowLabel()}`) => {
     if (!activeProject) return null;
@@ -588,15 +775,24 @@ export function App() {
       message: `将使用“${checkpoint.label}”覆盖当前论文文本源文件。项目数据和 inputs 不受影响。`,
       confirmLabel: '恢复检查点',
       action: async () => {
-        await desktopApi.restoreCheckpoint(activeProject.root, checkpoint.id);
-        await loadProject(activeProject);
-        setConfirm(null);
-        notify('检查点已恢复', 'success');
+        try {
+          await desktopApi.restoreCheckpoint(activeProject.root, checkpoint.id);
+          await loadProject(activeProject);
+          setConfirm(null);
+          notify('检查点已恢复', 'success');
+        } catch (error) {
+          setConfirm(null);
+          notify(error.message || '恢复检查点失败，请重试。', 'error');
+        }
       },
     });
   };
 
   const requestRemoveProject = (project) => {
+    if (projectIsRunning(displayRuns, project?.root)) {
+      notify('任务运行中，停止并保存当前进度后才能移除项目。', 'error');
+      return;
+    }
     setConfirm({
       title: '移除项目',
       message: `仅从数模工坊移除“${project.name}”，不会删除 ${project.root} 中的任何文件。`,
@@ -618,14 +814,57 @@ export function App() {
     });
   };
 
+  const requestHistoricalRunAction = (run, mode) => {
+    if (!activeProject?.root || !run || running) return;
+    const resume = mode === 'resume';
+    const project = activeProject;
+    setConfirm({
+      title: resume ? '从历史断点继续' : '重新运行历史任务',
+      message: resume
+        ? `将从运行 ${run.runId.slice(0, 12)} 的已保存断点继续，后续模型调用仍会正常计费。`
+        : `将参考运行 ${run.runId.slice(0, 12)} 的阶段范围启动一次全新运行，模型调用会正常计费。`,
+      confirmLabel: resume ? '继续运行' : '重新运行',
+      action: async () => {
+        setConfirm(null);
+        markLocalRun(project.root, run.stage || 'analysis');
+        setDrawerOpen(true);
+        setDrawerTab('logs');
+        try {
+          const result = resume
+            ? await desktopApi.resumeRun(project.root, run.runId)
+            : await desktopApi.replayRun(project.root, run.runId);
+          if (result?.status === 'paused') notify('运行已暂停，可稍后从同一记录继续。');
+          else notify(resume ? '历史运行已继续执行' : '历史任务已重新运行', 'success');
+        } catch (error) {
+          notify(error.message || (resume ? '恢复历史运行失败。' : '重新运行失败。'), 'error');
+        } finally {
+          clearLocalRun(project.root);
+          await refreshRunCatalog(project).catch(() => {});
+          await loadProject(project).catch(() => {});
+        }
+      },
+    });
+  };
+
   const exportFile = async (file, label) => {
     if (!file) return notify(`未找到可导出的${label}`, 'error');
-    const target = await desktopApi.exportFile(file.path);
-    if (target) notify(`${label}已导出`, 'success');
+    try {
+      const target = await desktopApi.exportFile(file.path);
+      if (target) notify(`${label}已导出`, 'success');
+    } catch (error) {
+      notify(error.message || `${label}导出失败，请重试。`, 'error');
+    }
   };
 
   const compilePaper = async () => {
-    if (settings.autoSave) await saveDocument();
+    if (settings.autoSave) {
+      try {
+        await saveDocument();
+      } catch (error) {
+        reportSaveError(error);
+        return;
+      }
+    }
     await createCheckpoint('论文编译前');
     await runPaperAction('compile');
   };
@@ -666,8 +905,14 @@ export function App() {
   };
 
   const openRunHistory = () => {
-    setDrawerTab('logs');
+    const projectRoot = activeProject?.root;
+    setDrawerTab('history');
     setDrawerOpen(true);
+    setHistoryLoading(true);
+    void refreshRunCatalog()
+      .catch((error) => {
+        if (projectRoot === activeProjectRef.current?.root) notify(error.message || '无法读取运行记录。', 'error');
+      });
   };
 
   const pdfFocus = activeStage === 'paper'
@@ -690,8 +935,8 @@ export function App() {
         onAccount={isDesktopRuntime ? () => setModal('account') : undefined}
         onRemove={requestRemoveProject}
         onOpenRuns={openRunHistory}
-        running={running}
-        activeRuns={activeRuns}
+        running={displayRuns.length > 0}
+        activeRuns={displayRuns}
         desktopAvailable={isDesktopRuntime}
       />
       <div className="app-workspace">
@@ -721,6 +966,7 @@ export function App() {
                   latex={latex}
                   setLatex={setLatex}
                   onSave={saveDocument}
+                  onSaveError={reportSaveError}
                   paper={snapshot?.paper}
                   figureUrl={figureUrl}
                   spreadsheet={spreadsheet}
@@ -737,22 +983,46 @@ export function App() {
                 />
               </div>
             ) : (
-              <div className="pipeline-layout"><StageWorkspace project={activeProject} stage={activeStage} snapshot={snapshot} onOpenFile={openWorkspaceFile} onPickFiles={handleStageFile} onDropFiles={importDroppedFiles} /></div>
+              <div className="pipeline-layout"><StageWorkspace project={activeProject} stage={activeStage} snapshot={snapshot} onOpenFile={openWorkspaceFile} onPickFiles={pickStageInputs} onDropFiles={importDroppedFiles} /></div>
             )}
             {activeStage === 'paper' && snapshot && !projectLoading && !pdfFocus ? (
               <PaperCommandBar
                 running={running}
                 hasPdf={Boolean(snapshot?.paper?.pdf)}
                 hasTex={Boolean(snapshot?.paper?.tex)}
+                hasMarkdown={Boolean(snapshot?.paper?.markdown)}
+                hasDocx={Boolean(snapshot?.paper?.docx)}
+                markdownEnabled={snapshot?.profile?.paperFormat === 'markdown'}
                 onCompile={compilePaper}
                 onAudit={() => runPaperAction('audit')}
                 onExportPdf={() => exportFile(snapshot?.paper?.pdf, 'PDF')}
                 onExportTex={() => exportFile(snapshot?.paper?.tex, 'LaTeX')}
-                onReveal={() => snapshot?.paper?.pdf && desktopApi.revealPath(snapshot.paper.pdf.path)}
+                onExportMarkdown={() => exportFile(snapshot?.paper?.markdown, 'Markdown')}
+                onExportDocx={() => exportFile(snapshot?.paper?.docx, 'DOCX')}
+                onReveal={() => revealOutput(snapshot?.paper?.pdf)}
                 onOpen={() => snapshot?.paper?.pdf && openExternal(snapshot.paper.pdf)}
               />
             ) : null}
-            <RunDrawer open={drawerOpen} setOpen={setDrawerOpen} tab={drawerTab} setTab={setDrawerTab} logs={logs} running={running} onStop={stopStage} onRestart={() => runFullPipeline()} onClear={() => setLogs([])} checkpoints={checkpoints} onCreateCheckpoint={() => createCheckpoint()} onRestoreCheckpoint={requestRestoreCheckpoint} />
+            <RunDrawer
+              open={drawerOpen}
+              setOpen={setDrawerOpen}
+              tab={drawerTab}
+              setTab={setDrawerTab}
+              logs={logs}
+              running={running}
+              onStop={stopStage}
+              onRestart={() => runFullPipeline()}
+              onClear={() => setLogs([])}
+              runs={runs}
+              selectedRunId={selectedRunId}
+              historyLoading={historyLoading}
+              onSelectRun={selectHistoricalRun}
+              onReplayRun={(run) => requestHistoricalRunAction(run, 'replay')}
+              onResumeRun={(run) => requestHistoricalRunAction(run, 'resume')}
+              checkpoints={checkpoints}
+              onCreateCheckpoint={() => createCheckpoint()}
+              onRestoreCheckpoint={requestRestoreCheckpoint}
+            />
           </div>
           {activeProject && !pdfFocus ? (
             <UtilitySidebar open={sidePanelOpen} onClose={() => setSidePanelOpen(false)} onOpenRuns={openRunHistory} running={running}>

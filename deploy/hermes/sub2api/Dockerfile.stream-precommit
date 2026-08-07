@@ -1,0 +1,3 @@
+FROM weishaw/sub2api@sha256:5433a314b1dacce7882d0739a6ec24bdec1419a93fba5a34bdecad950137cbb5
+
+COPY --chown=1000:1000 sub2api /app/sub2api

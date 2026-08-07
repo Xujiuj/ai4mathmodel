@@ -1,9 +1,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const http = require('node:http');
+const path = require('node:path');
 
 const { createSub2apiAdapter } = require('../gateway/sub2api.cjs');
 const gatewayConfig = require('../gateway/config.example.json');
+const {
+  SAME_ACCOUNT_RETRY_COUNT,
+  SAME_ACCOUNT_RETRY_STATUS_CODES,
+  accountCredentials,
+  buildSyncSql,
+} = require('../deploy/hermes/sub2api/sync-upstream-accounts.cjs');
 
 const PATHS = {
   loginPath: '/api/v1/auth/login',
@@ -159,6 +167,41 @@ test('sub2api billing reports request ids that are not visible yet', async () =>
   });
 });
 
+test('sub2api service billing uses server credentials and returns per-request costs', async () => {
+  await withJsonServer({
+    [PATHS.loginPath]: {
+      code: 0,
+      message: 'success',
+      data: { access_token: 'service-jwt', user: { email: 'billing@example.com' } },
+    },
+    [`${PATHS.usageListPath}?request_id=req-visible&page=1&page_size=20`]: {
+      code: 0,
+      message: 'success',
+      data: { items: [{ request_id: 'req-visible', actual_cost: '0.125' }] },
+    },
+    [`${PATHS.usageListPath}?request_id=req-pending&page=1&page_size=20`]: {
+      code: 0,
+      message: 'success',
+      data: { items: [] },
+    },
+  }, async (base, requests) => {
+    const adapter = createSub2apiAdapter({
+      base,
+      paths: PATHS,
+      billingService: { email: 'billing@example.com', password: 'billing-password' },
+    });
+    assert.deepEqual(await adapter.serviceRequestCosts(['req-visible', 'req-pending']), {
+      requestCosts: [{ requestId: 'req-visible', actualCostUsd: 0.125 }],
+      complete: false,
+      missingRequestIds: ['req-pending'],
+    });
+    await adapter.serviceRequestCosts(['req-visible']);
+    assert.equal(requests.filter((request) => request.url === PATHS.loginPath).length, 1);
+    assert.equal(requests.filter((request) => request.url.startsWith(PATHS.usageListPath))
+      .every((request) => request.authorization === 'Bearer service-jwt'), true);
+  });
+});
+
 test('sub2api adapter rejects a successful HTTP response with the wrong envelope', async () => {
   await withJsonServer({
     [PATHS.loginPath]: { code: 0, message: 'success', data: { token: 'legacy-token' } },
@@ -168,6 +211,43 @@ test('sub2api adapter rejects a successful HTTP response with the wrong envelope
   });
 });
 
+test('sub2api readiness requires an explicit ok true JSON response', async () => {
+  await withJsonServer({ '/health': { ok: false } }, async (base) => {
+    const adapter = createSub2apiAdapter({ base, paths: { ...PATHS, healthPath: '/health' } });
+    await assert.rejects(adapter.ready(), /SUB2API_UNAVAILABLE/);
+  });
+});
+
+test('sub2api billing bounds concurrent usage lookups', async () => {
+  let active = 0;
+  let peak = 0;
+  const server = http.createServer((request, response) => {
+    if (!request.url.startsWith(PATHS.usageListPath)) {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    active += 1;
+    peak = Math.max(peak, active);
+    setTimeout(() => {
+      active -= 1;
+      const requestId = new URL(request.url, 'http://127.0.0.1').searchParams.get('request_id');
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ code: 0, data: { items: [{ request_id: requestId, actual_cost: 0.01 }] } }));
+    }, 10);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const adapter = createSub2apiAdapter({ base, paths: PATHS, billingConcurrency: 3 });
+    const result = await adapter.requestCosts('jwt-token', Array.from({ length: 72 }, (_, index) => `req-${index}`));
+    assert.equal(result.requestCosts.length, 72);
+    assert.equal(peak, 3);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
 test('sub2api adapter rejects incomplete endpoint configuration at startup', () => {
   assert.throws(
     () => createSub2apiAdapter({ base: 'http://127.0.0.1:18080', paths: { ...PATHS, usagePath: '' } }),
@@ -175,10 +255,45 @@ test('sub2api adapter rejects incomplete endpoint configuration at startup', () 
   );
 });
 
-test('hosted reasoning catalog uses the current GPT-5.6-SOL route', () => {
+test('hosted catalog fixes the approved model roles', () => {
   assert.equal(gatewayConfig.tiers[0].models.reasoning, 'gpt-5.6-sol');
-  assert.equal(gatewayConfig.tiers[0].models.writing, 'gpt-5.6-sol');
+  assert.equal(gatewayConfig.tiers[0].models.coding, 'gpt-5.6-terra');
+  assert.equal(gatewayConfig.tiers[0].models.writing, 'claude-sonnet-5');
   assert.equal(gatewayConfig.tiers[0].models.image, 'gpt-image-2');
   assert.equal(gatewayConfig.sub2api.topUpPath, '/purchase');
   assert.equal(gatewayConfig.sub2api.topUpEnabled, false);
+});
+
+test('Hermes upstream accounts retry a Quya 502 five times before pool failover', () => {
+  const credentials = accountCredentials({
+    token: 'test-quya-token-at-least-twelve-characters',
+    modelMapping: { 'gpt-5.6-sol': 'gpt-5.6-sol' },
+  });
+  assert.equal(credentials.pool_mode, true);
+  assert.equal(credentials.pool_mode_retry_count, 5);
+  assert.deepEqual(credentials.pool_mode_retry_status_codes, [502]);
+  assert.equal(SAME_ACCOUNT_RETRY_COUNT, 5);
+  assert.deepEqual(SAME_ACCOUNT_RETRY_STATUS_CODES, [502]);
+
+  const sql = buildSyncSql({
+    baseUrl: 'https://api.quya.org/v1',
+    groupId: 1,
+    groupName: 'standard-group',
+    gptToken: 'test-gpt-token-at-least-twelve-characters',
+    claudeToken: 'test-claude-token-at-least-twelve-characters',
+  });
+  // Each of the three accounts is represented in both the update and insert branches.
+  assert.equal((sql.match(/"pool_mode":true/g) || []).length, 6);
+  assert.equal((sql.match(/"pool_mode_retry_count":5/g) || []).length, 6);
+  assert.equal((sql.match(/"pool_mode_retry_status_codes":\[502\]/g) || []).length, 6);
+});
+
+test('Sub2API hardening does not trust fixed container names or placeholder Redis secrets', () => {
+  const harden = fs.readFileSync(path.join(__dirname, '..', 'deploy', 'hermes', 'sub2api', 'harden.sh'), 'utf8');
+  assert.match(harden, /umask 077/);
+  assert.match(harden, /REDIS_PASSWORD=\[\^\[:space:\]\]\{32,\}/);
+  assert.match(harden, /compose .* ps -q redis/);
+  assert.match(harden, /compose .* ps -q sub2api/);
+  assert.doesNotMatch(harden, /docker exec sub2api-redis/);
+  assert.doesNotMatch(harden, /docker inspect sub2api /);
 });

@@ -3,8 +3,10 @@ import {
   Eye,
   EyeOff,
   Download,
+  FileText,
   FolderOpen,
   KeyRound,
+  Languages,
   Monitor,
   Moon,
   RefreshCw,
@@ -14,9 +16,16 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { DEFAULT_SETTINGS, MODEL_CONNECTIONS } from '../modelConfig.js';
+import {
+  canonicalConnectionKey,
+  CONNECTION_ALIASES,
+  DEFAULT_SETTINGS,
+  MODEL_CONNECTIONS,
+  modelProtocolsForConnection,
+} from '../modelConfig.js';
 import { AccountPanel } from './AccountPanel.jsx';
 import { CommandButton, IconButton } from './Shell.jsx';
+import { UpdateCenter } from './UpdateCenter.jsx';
 
 export function Modal({ title, children, onClose, width = 520 }) {
   useEffect(() => {
@@ -36,13 +45,45 @@ export function Modal({ title, children, onClose, width = 520 }) {
 
 export function CreateProjectModal({ onClose, onCreate }) {
   const [name, setName] = useState('新建数模项目');
+  const [profile, setProfile] = useState({ competition: 'china', paperFormat: 'latex' });
+  const [problemText, setProblemText] = useState('');
+  const [problemFileName, setProblemFileName] = useState('');
+  const updateProfile = (key, value) => setProfile((current) => ({ ...current, [key]: value }));
+  const loadProblemFile = async (file) => {
+    if (!file) return;
+    const extension = String(file.name || '').toLowerCase().split('.').pop();
+    if (!['txt', 'md'].includes(extension)) return;
+    setProblemText(await file.text());
+    setProblemFileName(file.name);
+  };
   return (
     <Modal title="新建项目" onClose={onClose}>
-      <form className="modal-form" onSubmit={(event) => { event.preventDefault(); onCreate(name); }}>
+      <form className="modal-form" onSubmit={(event) => { event.preventDefault(); onCreate(name, profile, { text: problemText, fileName: problemFileName }); }}>
         <label><span>项目名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <label><span>题目文本（可选）</span><textarea value={problemText} onChange={(event) => { setProblemText(event.target.value); setProblemFileName(''); }} rows={5} placeholder="直接粘贴题目；也可以拖入或选择 .txt / .md 文件" /></label>
+        <div className="project-text-drop" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void loadProblemFile(event.dataTransfer.files?.[0]); }}>
+          <span>{problemFileName || '拖放 .txt / .md 题目文件到这里'}</span>
+          <label className="button secondary"><input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => { void loadProblemFile(event.target.files?.[0]); }} />选择文件</label>
+        </div>
+        <div className="project-profile-fields">
+          <fieldset>
+            <legend><Languages size={13} />竞赛制式</legend>
+            <div className="project-option-segments" role="radiogroup" aria-label="竞赛制式">
+              <button type="button" role="radio" aria-checked={profile.competition === 'china'} className={profile.competition === 'china' ? 'active' : ''} onClick={() => updateProfile('competition', 'china')}>中国赛制</button>
+              <button type="button" role="radio" aria-checked={profile.competition === 'american'} className={profile.competition === 'american' ? 'active' : ''} onClick={() => updateProfile('competition', 'american')}>美国赛制</button>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend><FileText size={13} />写作格式</legend>
+            <div className="project-option-segments" role="radiogroup" aria-label="论文写作格式">
+              <button type="button" role="radio" aria-checked={profile.paperFormat === 'latex'} className={profile.paperFormat === 'latex' ? 'active' : ''} onClick={() => updateProfile('paperFormat', 'latex')}>LaTeX</button>
+              <button type="button" role="radio" aria-checked={profile.paperFormat === 'markdown'} className={profile.paperFormat === 'markdown' ? 'active' : ''} onClick={() => updateProfile('paperFormat', 'markdown')}>Markdown</button>
+            </div>
+          </fieldset>
+        </div>
         <div className="project-structure-preview">
           <FolderOpen size={18} />
-          <div><strong>标准工作区</strong><p>inputs/template、inputs/problem 与 work</p></div>
+          <div><strong>{profile.competition === 'american' ? '美国赛制' : '中国赛制'} · {profile.paperFormat === 'markdown' ? 'Markdown + LaTeX/PDF' : 'LaTeX/PDF'}</strong><p>inputs/template、inputs/problem 与 work</p></div>
         </div>
         <footer><button type="button" onClick={onClose}>取消</button><CommandButton type="submit" tone="primary">创建项目</CommandButton></footer>
       </form>
@@ -68,9 +109,14 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
   const [form, setForm] = useState({
     ...DEFAULT_SETTINGS,
     ...settings,
+    agentPolicy: {
+      ...DEFAULT_SETTINGS.agentPolicy,
+      ...(settings?.agentPolicy || {}),
+    },
     connections: Object.fromEntries(MODEL_CONNECTIONS.map(([key]) => [key, {
       ...DEFAULT_SETTINGS.connections[key],
-      ...settings?.connections?.[key],
+      ...(settings?.connections?.[key] || CONNECTION_ALIASES[key]?.map((alias) => settings?.connections?.[alias]).find(Boolean)),
+      ...(key === 'image' ? { protocol: 'openai' } : {}),
       apiKey: '',
       clearApiKey: false,
     }])),
@@ -80,7 +126,7 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
       ...(settings?.pythonSandbox || {}),
     },
   });
-  const [activeConnection, setActiveConnection] = useState('reasoning');
+  const [activeConnection, setActiveConnection] = useState(MODEL_CONNECTIONS[0]?.[0] || 'coordinator');
   const [discovery, setDiscovery] = useState({});
   const [showKeys, setShowKeys] = useState({});
   const [saving, setSaving] = useState(false);
@@ -151,8 +197,8 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
     setFormMessage('');
     try {
       const result = await onImportLocalConfig(source);
-      const key = result?.connectionKey;
-      if (!MODEL_CONNECTIONS.some(([item]) => item === key) || !result?.connection) throw new Error('本地配置格式无效。');
+      const key = canonicalConnectionKey(result?.connectionKey);
+      if (!key || !result?.connection) throw new Error('本地配置格式无效。');
       setForm((current) => ({
         ...current,
         connections: {
@@ -160,6 +206,7 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
           [key]: {
             ...current.connections[key],
             ...result.connection,
+            ...(key === 'image' ? { protocol: 'openai' } : {}),
             apiKey: result.apiKey || current.connections[key].apiKey,
             apiKeyConfigured: Boolean(result.apiKey || current.connections[key].apiKeyConfigured),
             clearApiKey: false,
@@ -216,7 +263,7 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
           <div className="settings-section-title"><div><h3>{activeMeta[1]}</h3></div><StatusLine value={connection.model || '未选择模型'} /></div>
           <div className="connection-grid">
             <label><span>服务名称（Provider）</span><input value={connection.provider || ''} placeholder="自定义服务名称" onChange={(event) => updateConnection(activeConnection, 'provider', event.target.value)} /></label>
-            <label><span>接口协议</span><select value={connection.protocol || 'openai'} onChange={(event) => updateConnection(activeConnection, 'protocol', event.target.value)}><option value="openai">OpenAI 兼容</option><option value="anthropic" disabled={activeConnection === 'image'}>Anthropic</option><option value="ollama">Ollama</option></select></label>
+            <label><span>接口协议</span><select value={connection.protocol || 'openai'} onChange={(event) => updateConnection(activeConnection, 'protocol', event.target.value)}>{modelProtocolsForConnection(activeConnection).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <label className="connection-wide"><span>接口地址（Base URL）</span><input value={connection.baseUrl || ''} placeholder="https://api.example.com/v1" onChange={(event) => updateConnection(activeConnection, 'baseUrl', event.target.value)} /></label>
             <label><span>API 密钥</span><div className="input-with-action"><KeyRound size={14} /><input type={showKeys[activeConnection] ? 'text' : 'password'} value={connection.apiKey || ''} placeholder={connection.apiKeyConfigured ? '已安全保存，留空继续使用' : '按服务要求填写'} onChange={(event) => updateConnection(activeConnection, 'apiKey', event.target.value)} /><IconButton label={showKeys[activeConnection] ? '隐藏密钥' : '显示密钥'} onClick={() => setShowKeys((current) => ({ ...current, [activeConnection]: !current[activeConnection] }))}>{showKeys[activeConnection] ? <EyeOff size={14} /> : <Eye size={14} />}</IconButton></div>{connection.apiKeyConfigured && !connection.apiKey ? <small className="credential-state">已配置本机密钥<button type="button" className="inline-danger" onClick={() => setForm((current) => ({ ...current, connections: { ...current.connections, [activeConnection]: { ...current.connections[activeConnection], apiKey: '', apiKeyConfigured: false, clearApiKey: true } } }))}>清除</button></small> : null}</label>
             <label className="model-field"><span>模型</span>{result.models.length ? <select value={connection.model || ''} onChange={(event) => updateConnection(activeConnection, 'model', event.target.value)}><option value="">选择可用模型</option>{connection.model && !result.models.includes(connection.model) ? <option value={connection.model}>{connection.model}</option> : null}{result.models.map((model) => <option key={model} value={model}>{model}</option>)}</select> : <input value={connection.model || ''} placeholder="测试连接后选择，或填写模型 ID" onChange={(event) => updateConnection(activeConnection, 'model', event.target.value)} />}</label>
@@ -245,6 +292,7 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
             <label className="toggle-row"><span><strong>自动保存</strong></span><input type="checkbox" checked={Boolean(form.autoSave)} onChange={(event) => update('autoSave', event.target.checked)} /></label>
             <label className="toggle-row"><span><strong>紧凑布局</strong></span><input type="checkbox" checked={Boolean(form.compactMode)} onChange={(event) => update('compactMode', event.target.checked)} /></label>
             <label className="toggle-row"><span><strong>求解允许联网</strong></span><input type="checkbox" checked={Boolean(form.pythonSandbox?.allowNetwork)} onChange={(event) => setForm((current) => ({ ...current, pythonSandbox: { ...current.pythonSandbox, allowNetwork: event.target.checked } }))} /></label>
+            <label className="toggle-row"><span><strong>在线学术检索</strong><small>启用后，检索词会发送至 OpenAlex。</small></span><input type="checkbox" checked={form.agentPolicy?.researchEnabled === true} onChange={(event) => setForm((current) => ({ ...current, agentPolicy: { ...current.agentPolicy, researchEnabled: event.target.checked } }))} /></label>
             <label className="toggle-row"><span><strong>费用预估提示</strong></span><input type="checkbox" checked={!form.skipBudgetPrompt} onChange={(event) => update('skipBudgetPrompt', !event.target.checked)} /></label>
           </div>
           {onExportDiagnostics ? (
@@ -268,6 +316,8 @@ export function ConnectionSettingsModal({ onClose, settings, onSave, onDiscoverM
             </div>
           ) : null}
         </section>
+
+        <UpdateCenter />
 
         <footer><span className="settings-save-message" role="status">{formMessage}</span><button type="button" onClick={onClose}>取消</button><CommandButton icon={Settings} tone="primary" onClick={save} disabled={saving}>{saving ? '保存中' : '保存设置'}</CommandButton></footer>
       </div>

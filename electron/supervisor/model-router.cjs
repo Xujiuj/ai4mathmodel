@@ -1,4 +1,4 @@
-const { normalizeSettings } = require('../runtime-config.cjs');
+const { connectionKeyForStage, normalizeSettings } = require('../runtime-config.cjs');
 
 function connectionModels(connection = {}) {
   const models = [connection.model]
@@ -9,9 +9,10 @@ function connectionModels(connection = {}) {
 
 function buildModelRoutes(rawSettings, stage, { supervisor = false } = {}) {
   const settings = normalizeSettings(rawSettings);
-  const primaryKey = supervisor || stage !== 'paper' ? 'reasoning' : 'writing';
-  const secondaryKey = primaryKey === 'reasoning' ? 'writing' : 'reasoning';
-  const keys = [primaryKey, secondaryKey];
+  const primaryKey = connectionKeyForStage(stage, { supervisor });
+  // A stage must not silently change provider or role. Retry policy may retry
+  // the selected connection, but selection is an explicit user configuration.
+  const keys = [primaryKey];
   const routes = [];
   const seen = new Set();
   for (const connectionKey of keys) {

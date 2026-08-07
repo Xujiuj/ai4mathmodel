@@ -51,7 +51,14 @@ export function StageWorkspace({ project, stage, snapshot, onOpenFile, onPickFil
         onDragOver={(event) => event.preventDefault()}
         onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
         onDrop={(event) => { event.preventDefault(); setDragging(false); onDropFiles([...event.dataTransfer.files]); }}
-      ><FolderOpen size={17} /><span>{dragging ? '松开以导入项目输入文件' : '将文件拖到此处导入项目输入，或'}</span><button onClick={() => onPickFiles()}>选择文件</button></div>
+      >
+        <FolderOpen size={17} />
+        <span>{dragging ? '松开以导入项目输入文件' : '将文件拖到此处导入项目输入，或'}</span>
+        <div className="stage-drop-actions">
+          <button onClick={() => onPickFiles?.('problem')}>选择赛题</button>
+          <button onClick={() => onPickFiles?.('template')}>选择模板</button>
+        </div>
+      </div>
     </section>
   );
 }

@@ -6,7 +6,12 @@ contextBridge.exposeInMainWorld('modelingDesktop', {
   appInfo: () => invoke('app:info'),
   listProjects: () => invoke('projects:list'),
   addProject: () => invoke('projects:add'),
-  createProject: (name) => invoke('projects:create', { name }),
+  createProject: (name, profile, problem = {}) => invoke('projects:create', {
+    name,
+    profile,
+    problemText: typeof problem?.text === 'string' ? problem.text : '',
+    problemFileName: typeof problem?.fileName === 'string' ? problem.fileName : '',
+  }),
   removeProject: (root) => invoke('projects:remove', { root }),
   snapshot: (root) => invoke('project:snapshot', { root }),
   addInputs: (root, kind) => invoke('project:add-inputs', { root, kind }),
@@ -31,17 +36,23 @@ contextBridge.exposeInMainWorld('modelingDesktop', {
   stopStage: (root) => invoke('pipeline:stop', { root }),
   activeRun: (root) => invoke('pipeline:active', { root }),
   activeRuns: () => invoke('pipeline:active-all'),
+  runHistory: (root, options = {}) => invoke('pipeline:history', { root, ...options }),
+  listRuns: (root, options = {}) => invoke('pipeline:runs', { root, ...options }),
+  resumeRun: (root, runId) => invoke('pipeline:resume', { root, runId }),
+  replayRun: (root, runId) => invoke('pipeline:replay', { root, runId }),
   exportDiagnostics: (root, includeSourceFiles = false) => invoke('diagnostics:export', { root, includeSourceFiles }),
   checkForUpdates: () => invoke('updater:check'),
   downloadUpdate: () => invoke('updater:download'),
   installUpdate: () => invoke('updater:install'),
   listComponentUpdates: () => invoke('components:list-updates'),
+  installComponentUpdate: (name) => invoke('components:install-update', { name }),
   listModels: (settings, connection) => invoke('models:list', { settings, connection }),
   importLocalModelConfig: (source) => invoke('settings:import-local', { source }),
   getSettings: () => invoke('settings:get'),
   saveSettings: (settings) => invoke('settings:save', settings),
   getAccount: () => invoke('account:get'),
   loginAccount: (email, password) => invoke('account:login', { email, password }),
+  registerAccount: (email, password) => invoke('account:register', { email, password }),
   logoutAccount: () => invoke('account:logout'),
   openTopUp: () => invoke('account:top-up'),
   onRunEvent: (callback) => {
@@ -53,5 +64,10 @@ contextBridge.exposeInMainWorld('modelingDesktop', {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('updater:event', handler);
     return () => ipcRenderer.removeListener('updater:event', handler);
+  },
+  onComponentEvent: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('components:event', handler);
+    return () => ipcRenderer.removeListener('components:event', handler);
   },
 });

@@ -1,0 +1,361 @@
+name: Windows Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Artifact mode
+        required: true
+        default: staging
+        type: choice
+        options: [staging, signed]
+      tag:
+        description: Existing v-prefixed tag required for a signed release
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}-${{ inputs.mode || 'verify' }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify clean-checkout skill bundle
+        shell: pwsh
+        run: |
+          git ls-files --error-unmatch electron/generated/agent-skills.bundle.json
+          node scripts/compile-agent-skills.cjs
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --audit-level=high
+      - run: node scripts/release-contract.cjs --mode staging
+
+  staging-artifact:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'staging'
+    runs-on: windows-latest
+    needs: contract
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+
+      - name: Ensure Electron runtime
+        run: npm run ensure:electron
+
+      - name: Generate hosted endpoint config
+        shell: pwsh
+        env:
+          MODELING_HOSTED_GATEWAY: ${{ secrets.MODELING_HOSTED_GATEWAY }}
+          MODELING_HOSTED_PORTAL: ${{ secrets.MODELING_HOSTED_PORTAL }}
+          MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256: ${{ secrets.MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256 }}
+        run: |
+          @'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { hostedEndpoints } = require('./electron/hosted/endpoints.cjs');
+          if (!process.env.MODELING_HOSTED_GATEWAY || !process.env.MODELING_HOSTED_PORTAL || !process.env.MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256) {
+            throw new Error('Hosted endpoint secrets are required');
+          }
+          const endpoints = hostedEndpoints(process.env);
+          for (const [name, value] of Object.entries(endpoints)) {
+            if (!value) throw new Error(`Hosted endpoint ${name} is required`);
+          }
+          const gateway = new URL(endpoints.gateway);
+          const portal = new URL(endpoints.portal);
+          if (gateway.protocol !== 'https:') throw new Error('MODELING_HOSTED_GATEWAY must use HTTPS');
+          if (portal.protocol !== 'https:') throw new Error('MODELING_HOSTED_PORTAL must use HTTPS');
+          if (gateway.pathname.replace(/\/+$/, '') !== '/agent') throw new Error('MODELING_HOSTED_GATEWAY must end in /agent');
+          if (!/^(?:[A-F0-9]{2}:){31}[A-F0-9]{2}$/i.test(endpoints.gatewayCertificateFingerprint256)) throw new Error('MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256 must be a SHA-256 fingerprint');
+          fs.mkdirSync(path.join('electron', 'hosted'), { recursive: true });
+          fs.writeFileSync(path.join('electron', 'hosted', 'endpoints.json'), `${JSON.stringify(endpoints, null, 2)}\n`);
+          '@ | node -
+
+      - name: Acquire digest-pinned runtime bundle
+        shell: pwsh
+        env:
+          RUNTIME_BUNDLE_URL: ${{ secrets.RUNTIME_BUNDLE_URL }}
+          RUNTIME_BUNDLE_SHA256: ${{ secrets.RUNTIME_BUNDLE_SHA256 }}
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          function Test-ZipEntryPath {
+            param([string]$ArchivePath, [string]$ExtractRoot)
+            $root = [IO.Path]::GetFullPath($ExtractRoot) + [IO.Path]::DirectorySeparatorChar
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+            try {
+              foreach ($entry in $zip.Entries) {
+                $name = $entry.FullName.Replace('\', '/')
+                if (-not $name) { throw 'Runtime bundle archive path invalid' }
+                $target = [IO.Path]::GetFullPath((Join-Path $ExtractRoot $name))
+                if ([IO.Path]::IsPathRooted($name) -or $name.Contains(':') -or $name.Contains([char]0) -or -not $target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+                  throw "Runtime bundle archive path invalid: $name"
+                }
+              }
+            } finally {
+              $zip.Dispose()
+            }
+          }
+          if ($env:RUNTIME_BUNDLE_URL -notmatch '^https://') { throw 'RUNTIME_BUNDLE_URL must use HTTPS' }
+          if ($env:RUNTIME_BUNDLE_SHA256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'RUNTIME_BUNDLE_SHA256 is invalid' }
+          $archive = Join-Path $env:RUNNER_TEMP 'runtime-bundle.zip'
+          $extract = Join-Path $env:RUNNER_TEMP 'runtime-bundle'
+          Invoke-WebRequest -Uri $env:RUNTIME_BUNDLE_URL -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:RUNTIME_BUNDLE_SHA256.ToLowerInvariant()) { throw 'Runtime bundle digest mismatch' }
+          Test-ZipEntryPath -ArchivePath $archive -ExtractRoot $extract
+          Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+          $source = if (Test-Path (Join-Path $extract 'runtime')) { Join-Path $extract 'runtime' } else { $extract }
+          New-Item -ItemType Directory -Path runtime -Force | Out-Null
+          Copy-Item -Path (Join-Path $source '*') -Destination runtime -Recurse -Force
+          foreach ($entry in @('python', 'tectonic', 'guard', 'THIRD_PARTY_NOTICES.txt')) {
+            if (-not (Test-Path (Join-Path runtime $entry))) { throw "Runtime bundle is missing $entry" }
+          }
+
+      - run: npm run verify:runtime
+
+      - name: Build unsigned staging installer
+        run: npm run dist:win
+
+      - name: Upload staging installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-staging-installer
+          path: release/MathModelingWorkbench-*-Installer/**
+          if-no-files-found: error
+
+  signed-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'signed'
+    runs-on: windows-latest
+    needs: contract
+    environment: production
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+
+      - name: Ensure Electron runtime
+        run: npm run ensure:electron
+
+      - name: Generate hosted endpoint config
+        shell: pwsh
+        env:
+          MODELING_HOSTED_GATEWAY: ${{ secrets.MODELING_HOSTED_GATEWAY }}
+          MODELING_HOSTED_PORTAL: ${{ secrets.MODELING_HOSTED_PORTAL }}
+          MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256: ${{ secrets.MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256 }}
+        run: |
+          @'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { hostedEndpoints } = require('./electron/hosted/endpoints.cjs');
+          if (!process.env.MODELING_HOSTED_GATEWAY || !process.env.MODELING_HOSTED_PORTAL || !process.env.MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256) {
+            throw new Error('Hosted endpoint secrets are required');
+          }
+          const endpoints = hostedEndpoints(process.env);
+          for (const [name, value] of Object.entries(endpoints)) {
+            if (!value) throw new Error(`Hosted endpoint ${name} is required`);
+          }
+          const gateway = new URL(endpoints.gateway);
+          const portal = new URL(endpoints.portal);
+          if (gateway.protocol !== 'https:') throw new Error('MODELING_HOSTED_GATEWAY must use HTTPS');
+          if (portal.protocol !== 'https:') throw new Error('MODELING_HOSTED_PORTAL must use HTTPS');
+          if (gateway.pathname.replace(/\/+$/, '') !== '/agent') throw new Error('MODELING_HOSTED_GATEWAY must end in /agent');
+          if (!/^(?:[A-F0-9]{2}:){31}[A-F0-9]{2}$/i.test(endpoints.gatewayCertificateFingerprint256)) throw new Error('MODELING_HOSTED_GATEWAY_CERTIFICATE_FINGERPRINT256 must be a SHA-256 fingerprint');
+          fs.mkdirSync(path.join('electron', 'hosted'), { recursive: true });
+          fs.writeFileSync(path.join('electron', 'hosted', 'endpoints.json'), `${JSON.stringify(endpoints, null, 2)}\n`);
+          '@ | node -
+
+      - name: Bake production signing publisher contract
+        shell: pwsh
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          WINDOWS_SIGNING_PUBLISHER_NAME: ${{ secrets.WINDOWS_SIGNING_PUBLISHER_NAME }}
+          WINDOWS_SIGNING_PUBLISHER_SHA256: ${{ secrets.WINDOWS_SIGNING_PUBLISHER_SHA256 }}
+        run: |
+          $repository = [string]$env:GITHUB_REPOSITORY
+          if ($repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'GITHUB_REPOSITORY is invalid' }
+          $publisherName = ([string]$env:WINDOWS_SIGNING_PUBLISHER_NAME).Trim()
+          $publisherSha256 = ([string]$env:WINDOWS_SIGNING_PUBLISHER_SHA256).Trim().ToLowerInvariant() -replace '^sha256:', ''
+          if ([string]::IsNullOrWhiteSpace($publisherName) -or $publisherName -match '(?i)example|placeholder|change-me|replace-with') { throw 'WINDOWS_SIGNING_PUBLISHER_NAME is required and must not be a placeholder' }
+          if ($publisherSha256 -notmatch '^[a-f0-9]{64}$') { throw 'WINDOWS_SIGNING_PUBLISHER_SHA256 must be a 64-character SHA-256 digest' }
+          $package = Get-Content -Raw package.json | ConvertFrom-Json
+          if (-not $package.releaseUpdate) { throw 'package.json releaseUpdate is required' }
+          $expectedApi = "https://api.github.com/repos/$repository/releases/latest"
+          $actualApi = ([string]$package.releaseUpdate.apiUrl).TrimEnd('/')
+          if ($actualApi -ine $expectedApi) { throw "package.json releaseUpdate.apiUrl must target $expectedApi" }
+          $package.releaseUpdate.publisherNames = @($publisherName)
+          $package.releaseUpdate.publisherThumbprints = @($publisherSha256)
+          $package | ConvertTo-Json -Depth 100 | Set-Content package.json -Encoding utf8NoBOM
+
+      - name: Validate signed release contract
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          WINDOWS_SIGNING_CERT_B64: ${{ secrets.WINDOWS_SIGNING_CERT_B64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+          WINDOWS_SIGNING_PUBLISHER_NAME: ${{ secrets.WINDOWS_SIGNING_PUBLISHER_NAME }}
+          WINDOWS_SIGNING_PUBLISHER_SHA256: ${{ secrets.WINDOWS_SIGNING_PUBLISHER_SHA256 }}
+          RUNTIME_BUNDLE_URL: ${{ secrets.RUNTIME_BUNDLE_URL }}
+          RUNTIME_BUNDLE_SHA256: ${{ secrets.RUNTIME_BUNDLE_SHA256 }}
+        run: node scripts/release-contract.cjs --mode signed
+
+      - name: Verify immutable release tag
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          $version = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") { throw "Release tag must equal v$version" }
+          $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG).Trim()
+          if (-not $tagCommit -or $tagCommit -ne '${{ github.sha }}') { throw 'Release tag must point to the workflow commit' }
+
+      - name: Acquire digest-pinned runtime bundle
+        shell: pwsh
+        env:
+          RUNTIME_BUNDLE_URL: ${{ secrets.RUNTIME_BUNDLE_URL }}
+          RUNTIME_BUNDLE_SHA256: ${{ secrets.RUNTIME_BUNDLE_SHA256 }}
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          function Test-ZipEntryPath {
+            param([string]$ArchivePath, [string]$ExtractRoot)
+            $root = [IO.Path]::GetFullPath($ExtractRoot) + [IO.Path]::DirectorySeparatorChar
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+            try {
+              foreach ($entry in $zip.Entries) {
+                $name = $entry.FullName.Replace('\', '/')
+                if (-not $name) { throw 'Runtime bundle archive path invalid' }
+                $target = [IO.Path]::GetFullPath((Join-Path $ExtractRoot $name))
+                if ([IO.Path]::IsPathRooted($name) -or $name.Contains(':') -or $name.Contains([char]0) -or -not $target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+                  throw "Runtime bundle archive path invalid: $name"
+                }
+              }
+            } finally {
+              $zip.Dispose()
+            }
+          }
+          $archive = Join-Path $env:RUNNER_TEMP 'runtime-bundle.zip'
+          $extract = Join-Path $env:RUNNER_TEMP 'runtime-bundle'
+          Invoke-WebRequest -Uri $env:RUNTIME_BUNDLE_URL -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:RUNTIME_BUNDLE_SHA256.ToLowerInvariant()) { throw 'Runtime bundle digest mismatch' }
+          Test-ZipEntryPath -ArchivePath $archive -ExtractRoot $extract
+          Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+          $source = if (Test-Path (Join-Path $extract 'runtime')) { Join-Path $extract 'runtime' } else { $extract }
+          New-Item -ItemType Directory -Path runtime -Force | Out-Null
+          Copy-Item -Path (Join-Path $source '*') -Destination runtime -Recurse -Force
+          foreach ($entry in @('python', 'tectonic', 'guard', 'THIRD_PARTY_NOTICES.txt')) {
+            if (-not (Test-Path (Join-Path runtime $entry))) { throw "Runtime bundle is missing $entry" }
+          }
+
+      - run: npm run verify:runtime
+
+      - name: Import Windows signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_B64: ${{ secrets.WINDOWS_SIGNING_CERT_B64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+          WINDOWS_SIGNING_PUBLISHER_NAME: ${{ secrets.WINDOWS_SIGNING_PUBLISHER_NAME }}
+          WINDOWS_SIGNING_PUBLISHER_SHA256: ${{ secrets.WINDOWS_SIGNING_PUBLISHER_SHA256 }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_B64))
+          $password = ConvertTo-SecureString $env:WINDOWS_SIGNING_CERT_PASSWORD -AsPlainText -Force
+          $certificates = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password | Where-Object HasPrivateKey)
+          if ($certificates.Count -ne 1) { throw 'Windows certificate import must produce exactly one private-key certificate' }
+          $cert = $certificates[0]
+          $publisherName = ([string]$env:WINDOWS_SIGNING_PUBLISHER_NAME).Trim()
+          $publisherSha256 = ([string]$env:WINDOWS_SIGNING_PUBLISHER_SHA256).Trim().ToLowerInvariant() -replace '^sha256:', ''
+          if ($cert.Subject -cne $publisherName) { throw "Certificate Subject does not exactly match WINDOWS_SIGNING_PUBLISHER_NAME: $($cert.Subject)" }
+          $sha256 = [Security.Cryptography.SHA256]::Create()
+          try { $certificateSha256 = [Convert]::ToHexString($sha256.ComputeHash($cert.RawData)).ToLowerInvariant() } finally { $sha256.Dispose() }
+          if ($certificateSha256 -cne $publisherSha256) { throw "Certificate SHA-256 thumbprint does not exactly match WINDOWS_SIGNING_PUBLISHER_SHA256: $certificateSha256" }
+          $releaseUpdate = (Get-Content -Raw package.json | ConvertFrom-Json).releaseUpdate
+          if (@($releaseUpdate.publisherNames).Count -ne 1 -or $releaseUpdate.publisherNames[0] -cne $publisherName) { throw 'package.json releaseUpdate.publisherNames is not the production signer allowlist' }
+          if (@($releaseUpdate.publisherThumbprints).Count -ne 1 -or $releaseUpdate.publisherThumbprints[0] -cne $publisherSha256) { throw 'package.json releaseUpdate.publisherThumbprints is not the production certificate allowlist' }
+          $signToolPattern = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin\*\x64\signtool.exe'
+          $signTool = Get-ChildItem -Path $signToolPattern | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signTool) { throw 'signtool.exe was not found' }
+          "CSC_LINK=$pfx" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "CSC_KEY_PASSWORD=$env:WINDOWS_SIGNING_CERT_PASSWORD" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WINDOWS_SIGNTOOL_PATH=$($signTool.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WINDOWS_SIGNING_CERT_SHA1=$($cert.Thumbprint)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WINDOWS_SIGNING_CERT_SHA256=$certificateSha256" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build and verify signed modular installer
+        run: npm run dist:win
+
+      - run: npm run smoke:installer
+
+      - name: Create release ZIP
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          $directory = Join-Path release "MathModelingWorkbench-$version-Installer"
+          $archive = Join-Path release "MathModelingWorkbench-$version-Installer.zip"
+          if (-not (Test-Path $directory)) { throw 'Installer directory was not produced' }
+          Compress-Archive -Path (Join-Path $directory '*') -DestinationPath $archive -CompressionLevel Optimal
+          "RELEASE_ASSET=$archive" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "RELEASE_ASSET_NAME=$([IO.Path]::GetFileName($archive))" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $assetSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "RELEASE_ASSET_SHA256=$assetSha256" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "Local release asset SHA-256: $assetSha256"
+
+      - name: Publish immutable GitHub Release asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'Release already exists; published assets are immutable' }
+          gh release create $env:RELEASE_TAG $env:RELEASE_ASSET --draft --verify-tag --title $env:RELEASE_TAG --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release creation failed' }
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the draft GitHub release' }
+          $release = $releaseJson | ConvertFrom-Json
+          if (-not $release.id -or -not $release.draft) { throw 'New GitHub release must remain a draft during asset verification' }
+          $assetsJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)/assets?per_page=100"
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to verify the draft release assets' }
+          $assets = @($assetsJson | ConvertFrom-Json)
+          $published = @($assets | Where-Object { $_.name -eq $env:RELEASE_ASSET_NAME })
+          if ($published.Count -ne 1) { throw "Published release must contain exactly one $env:RELEASE_ASSET_NAME asset" }
+          if ([string]$published[0].digest -ine "sha256:$env:RELEASE_ASSET_SHA256") { throw "Published asset digest does not match local SHA-256: $($published[0].digest)" }
+          gh release edit $env:RELEASE_TAG --draft=false
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to publish the verified GitHub release' }
+          $publishedReleaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to verify the published GitHub release' }
+          $publishedRelease = $publishedReleaseJson | ConvertFrom-Json
+          if ($publishedRelease.draft) { throw 'GitHub release remained a draft after publication' }

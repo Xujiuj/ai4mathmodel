@@ -3,6 +3,15 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const YAML = require('yaml');
 
+const {
+  validateAggregateContract,
+  validateEvidenceManifest,
+  validateResultsContracts,
+  validateSubproblemInputs,
+  validateSubproblemsContract,
+} = require('./artifact-contracts.cjs');
+const { defaultLatexTemplate } = require('../default-templates.cjs');
+
 const MIN_ANALYSIS_CHARACTERS = 3_500;
 const MIN_PAPER_CHARACTERS = 8_000;
 const MIN_ABSTRACT_CHARACTERS = 400;
@@ -41,6 +50,44 @@ async function readUtf8(file) {
   return file ? fsp.readFile(file.path, 'utf8').catch(() => '') : '';
 }
 
+async function projectArtifactExists(view, relative) {
+  try {
+    const target = view.resolvePath(relative);
+    if (!insideRoot(view.root, target)) return false;
+    const stat = await fsp.lstat(target);
+    if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    const [rootReal, targetReal] = await Promise.all([
+      fsp.realpath(view.root),
+      fsp.realpath(target),
+    ]);
+    return insideRoot(rootReal, targetReal);
+  } catch {
+    return false;
+  }
+}
+
+async function readStructuredProjectArtifact(view, relative) {
+  if (!/\.(?:ya?ml|json)$/i.test(relative) || !await projectArtifactExists(view, relative)) return null;
+  try {
+    const target = view.resolvePath(relative);
+    const stat = await fsp.stat(target);
+    if (stat.size > 5 * 1024 * 1024) return null;
+    const source = await fsp.readFile(target, 'utf8');
+    return /\.json$/i.test(relative) ? JSON.parse(source) : YAML.parse(source);
+  } catch {
+    return null;
+  }
+}
+
+function contractFailure(validation, artifactRefs) {
+  return {
+    ok: false,
+    code: validation.code,
+    reason: validation.reason,
+    artifactRefs,
+  };
+}
+
 function extractAbstract(value) {
   const source = String(value || '');
   const environment = source.match(/\\begin\s*\{(?:abstract|cnabstract|zhabstract|abstractzh)\}\s*([\s\S]*?)\\end\s*\{(?:abstract|cnabstract|zhabstract|abstractzh)\}/i);
@@ -64,14 +111,40 @@ async function validateReferencedFigures(root, entryDirectory, texSource, pdf) {
     .filter(Boolean);
   const extensions = ['.pdf', '.png', '.jpg', '.jpeg', '.webp'];
   const files = [];
+  const rootReal = await fsp.realpath(root).catch(() => path.resolve(root));
   for (const reference of [...new Set(references)]) {
     const normalized = reference.replaceAll('\\', path.sep).replaceAll('/', path.sep);
     const bases = ['', ...graphicPaths].map((base) => path.resolve(entryDirectory, base.replaceAll('\\', path.sep).replaceAll('/', path.sep), normalized));
     const candidates = bases.flatMap((candidate) => path.extname(candidate) ? [candidate] : extensions.map((extension) => `${candidate}${extension}`));
-    const target = candidates.find((candidate) => insideRoot(root, candidate) && fs.existsSync(candidate));
-    if (!target) return { ok: false, code: 'FIGURE_REFERENCE_MISSING', reason: `论文引用的图片不存在：${reference}`, files };
-    const stat = await fsp.stat(target);
-    const file = { path: target, relative: toRelative(root, target), modifiedAt: stat.mtimeMs };
+    let target;
+    let targetStat;
+    let unsafeCandidate = false;
+    for (const candidate of candidates) {
+      if (!insideRoot(root, candidate) || !fs.existsSync(candidate)) continue;
+      try {
+        const [stat, candidateReal] = await Promise.all([
+          fsp.lstat(candidate),
+          fsp.realpath(candidate),
+        ]);
+        if (stat.isSymbolicLink() || !insideRoot(rootReal, candidateReal)) {
+          unsafeCandidate = true;
+          continue;
+        }
+        if (!stat.isFile()) continue;
+        target = candidate;
+        targetStat = stat;
+        break;
+      } catch {
+        // Treat a concurrently removed candidate as missing.
+      }
+    }
+    if (!target) {
+      return unsafeCandidate
+        ? { ok: false, code: 'FIGURE_REFERENCE_UNSAFE', reason: `论文引用的图片越出项目边界：${reference}`, files }
+        : { ok: false, code: 'FIGURE_REFERENCE_MISSING', reason: `论文引用的图片不存在：${reference}`, files };
+    }
+    const stat = targetStat;
+    const file = { path: target, relative: toPublicRelative(root, target), modifiedAt: stat.mtimeMs };
     files.push(file);
     if (pdf?.modifiedAt && stat.mtimeMs > pdf.modifiedAt + 10) {
       return { ok: false, code: 'PDF_STALE', reason: '论文图片晚于最终 PDF，必须重新编译并核对版面。', files };
@@ -153,13 +226,23 @@ async function containsRegularFile(directory) {
   return false;
 }
 
-async function ensureWorkspaceInitialized(root) {
+async function ensureWorkspaceInitialized(root, options = {}) {
   const templateFiles = await listFiles(root, path.join('inputs', 'template'));
   const problemFiles = await listFiles(root, path.join('inputs', 'problem'));
-  if (!templateFiles.length || !problemFiles.length) {
+  if (!problemFiles.length) {
     return { ok: false, reason: '赛题文件和论文模板必须同时存在。', code: 'MISSING_INPUTS' };
   }
-  const texFiles = templateFiles.filter((file) => file.ext === '.tex');
+  let generatedTemplate = false;
+  if (!templateFiles.length) {
+    const templateDirectory = path.join(root, 'inputs', 'template');
+    await fsp.mkdir(templateDirectory, { recursive: true });
+    await fsp.writeFile(path.join(templateDirectory, 'main.tex'), defaultLatexTemplate(options.competition), { encoding: 'utf8', flag: 'wx' });
+    generatedTemplate = true;
+  }
+  const availableTemplateFiles = generatedTemplate
+    ? await listFiles(root, path.join('inputs', 'template'))
+    : templateFiles;
+  const texFiles = availableTemplateFiles.filter((file) => file.ext === '.tex');
   const preferredNames = ['main.tex', 'paper.tex', 'mcm.tex', 'cumcm.tex', 'example.tex'];
   let template = preferredNames.map((name) => texFiles.find((file) => file.name.toLowerCase() === name)).find(Boolean);
   if (!template) {
@@ -193,14 +276,15 @@ async function ensureWorkspaceInitialized(root) {
     statement: statement.relative,
     dataFiles: Math.max(0, problemFiles.length - 1),
     copiedTemplateFiles,
+    generatedTemplate,
   };
 }
 
-async function evaluateStageGate(root, stage) {
+async function evaluateStageGate(root, stage, options = {}) {
   const dependency = { analysis: 'init', solving: 'analysis', paper: 'solving', review: 'paper' }[stage];
   if (!dependency) return { ok: false, reason: `未知阶段：${stage}` };
   if (dependency === 'init') return { ok: true, dependency };
-  const validation = await validateStageArtifacts(root, dependency);
+  const validation = await validateStageArtifacts(root, dependency, options);
   if (!validation.ok) return { ok: false, reason: `上一步成果尚未通过验证：${validation.reason}`, dependency };
   return { ok: true, dependency };
 }
@@ -221,9 +305,13 @@ async function validPdf(file) {
   }
 }
 
-async function validateStageArtifacts(root, stage) {
+async function validateStageArtifacts(rootOrView, stage, options = {}) {
+  const view = asProjectView(rootOrView);
+  const root = view.root;
+  const artifactExists = (relative) => projectArtifactExists(view, relative);
+  const artifactReader = (relative) => readStructuredProjectArtifact(view, relative);
   if (stage === 'analysis') {
-    const files = await listFiles(root, 'work/01_analysis');
+    const files = await listFiles(view, 'work/01_analysis');
     const document = files.find((file) => file.name.toLowerCase() === 'analysis.md');
     if (!document) return { ok: false, code: 'ANALYSIS_MISSING', reason: '缺少有效的 analysis.md。', artifactRefs: [] };
     const source = await readUtf8(document);
@@ -234,8 +322,8 @@ async function validateStageArtifacts(root, stage) {
     const coverage = conceptCoverage(source, [
       [/问题重述|任务拆解|problem\s+(?:restatement|definition)/i],
       [/数据理解|数据分析|data\s+(?:understanding|analysis)/i],
-      [/模型假设|基本假设|assumptions?/i],
-      [/符号说明|符号表|notations?|symbols?/i],
+      [/模型假设|建模假设|基本假设|assumptions?/i],
+      [/符号说明|符号表|符号与(?:单位|定义)|notations?|symbols?/i],
       [/方法比较|模型建立|求解方法|methodology|model(?:ing)?\s+approach/i],
       [/验证|敏感性|稳健性|误差|validation|sensitivity|robustness|error\s+analysis/i],
     ]);
@@ -247,10 +335,31 @@ async function validateStageArtifacts(root, stage) {
       return { ok: false, code: 'PROBLEM_TEXT_MISSING', reason: '缺少可复核的规范化赛题文本。', artifactRefs: [document.relative] };
     }
     const pdf = files.find((file) => file.name.toLowerCase() === 'analysis.pdf');
-    return { ok: true, summary: '赛题分析文档已通过内容、结构与验证设计检查。', artifactRefs: [document, problemText, pdf].filter(Boolean).map((file) => file.relative) };
+    if (!await validPdf(pdf)) {
+      return { ok: false, code: 'ANALYSIS_PDF_INVALID', reason: 'Analysis PDF is missing or invalid.', artifactRefs: [document.relative, problemText.relative] };
+    }
+    const subproblemsFile = files.find((file) => file.name.toLowerCase() === 'subproblems.yaml');
+    if (!subproblemsFile) {
+      return { ok: false, code: 'SUBPROBLEMS_CONTRACT_MISSING', reason: 'Analysis must produce work/01_analysis/subproblems.yaml.', artifactRefs: [document.relative, problemText.relative, pdf.relative] };
+    }
+    let subproblemsContract;
+    try {
+      subproblemsContract = YAML.parse(await readUtf8(subproblemsFile));
+    } catch {
+      return { ok: false, code: 'SUBPROBLEMS_CONTRACT_INVALID', reason: 'subproblems.yaml is not valid YAML.', artifactRefs: [subproblemsFile.relative] };
+    }
+    const contractValidation = validateSubproblemsContract(subproblemsContract);
+    if (!contractValidation.ok) {
+      return contractFailure(contractValidation, [subproblemsFile.relative]);
+    }
+    const inputValidation = await validateSubproblemInputs(subproblemsContract, { artifactExists });
+    if (!inputValidation.ok) {
+      return contractFailure(inputValidation, [subproblemsFile.relative]);
+    }
+    return { ok: true, summary: '赛题分析文档与结构化子问题合同已通过检查。', artifactRefs: [document, problemText, pdf, subproblemsFile].filter(Boolean).map((file) => file.relative) };
   }
   if (stage === 'solving') {
-    const files = await listFiles(root, 'work/02_solving');
+    const files = await listFiles(view, 'work/02_solving');
     const results = files.filter((file) => file.name.toLowerCase() === 'results.yaml');
     const sources = files.filter((file) => ['.py', '.ipynb', '.r', '.m'].includes(file.ext));
     if (!results.length) return { ok: false, code: 'RESULTS_MISSING', reason: '模型求解未生成任何 results.yaml。', artifactRefs: [] };
@@ -267,6 +376,7 @@ async function validateStageArtifacts(root, stage) {
     if (!aggregateValue || typeof aggregateValue !== 'object' || meaningfulCharacterCount(aggregateSource) < 180 || !containsNumericEvidence(aggregateValue)) {
       return { ok: false, code: 'AGGREGATE_RESULTS_INCOMPLETE', reason: '汇总实验结果缺少指标、误差或对照数据。', artifactRefs: [aggregate.relative] };
     }
+    const resultRecords = [];
     for (const result of results) {
       const resultSource = await readUtf8(result);
       try {
@@ -274,18 +384,61 @@ async function validateStageArtifacts(root, stage) {
         if (!value || typeof value !== 'object' || !containsNumericEvidence(value)) {
           return { ok: false, code: 'RESULTS_INCOMPLETE', reason: '子问题结果缺少可复核的数值证据。', artifactRefs: [result.relative] };
         }
+        resultRecords.push({ relative: result.relative, value });
       } catch {
         return { ok: false, code: 'RESULTS_INVALID', reason: '子问题结果文件格式无效。', artifactRefs: [result.relative] };
       }
     }
+
+    const analysisFiles = await listFiles(view, 'work/01_analysis');
+    const subproblemsFile = analysisFiles.find((file) => file.name.toLowerCase() === 'subproblems.yaml');
+    if (!subproblemsFile) {
+      return { ok: false, code: 'SUBPROBLEMS_CONTRACT_MISSING', reason: 'Solving requires the validated analysis subproblem contract.', artifactRefs: [aggregate.relative, ...results.map((file) => file.relative)] };
+    }
+    let subproblemsContract;
+    try {
+      subproblemsContract = YAML.parse(await readUtf8(subproblemsFile));
+    } catch {
+      return { ok: false, code: 'SUBPROBLEMS_CONTRACT_INVALID', reason: 'subproblems.yaml is not valid YAML.', artifactRefs: [subproblemsFile.relative] };
+    }
+    const subproblemsValidation = validateSubproblemsContract(subproblemsContract);
+    if (!subproblemsValidation.ok) {
+      return contractFailure(subproblemsValidation, [subproblemsFile.relative]);
+    }
+    const inputValidation = await validateSubproblemInputs(subproblemsContract, { artifactExists });
+    if (!inputValidation.ok) {
+      return contractFailure(inputValidation, [subproblemsFile.relative]);
+    }
+    const resultsValidation = await validateResultsContracts(resultRecords, subproblemsContract, { artifactExists, artifactReader });
+    if (!resultsValidation.ok) {
+      return contractFailure(resultsValidation, results.map((file) => file.relative));
+    }
+    const aggregateValidation = await validateAggregateContract(
+      aggregateValue,
+      subproblemsContract,
+      resultsValidation.resultPathById,
+      { artifactExists, resultValueById: resultsValidation.resultValueById },
+    );
+    if (!aggregateValidation.ok) {
+      return contractFailure(aggregateValidation, [aggregate.relative]);
+    }
     return {
       ok: true,
       summary: `已验证 ${results.length} 组子问题结果、汇总实验数据和 ${sources.length} 个可复现代码载体。`,
-      artifactRefs: [aggregate, ...results, ...sources].filter(Boolean).slice(0, 30).map((file) => file.relative),
+      artifactRefs: [subproblemsFile, aggregate, ...results, ...sources].filter(Boolean).slice(0, 30).map((file) => file.relative),
     };
   }
   if (stage === 'paper' || stage === 'review') {
-    const paperFiles = await listFiles(root, 'work/03_paper');
+    const paperFiles = await listFiles(view, 'work/03_paper');
+    const markdown = options.paperFormat === 'markdown'
+      ? paperFiles.find((file) => file.name.toLowerCase() === 'paper.md')
+      : null;
+    if (options.paperFormat === 'markdown' && !markdown) {
+      return { ok: false, code: 'MARKDOWN_MISSING', reason: 'Markdown 项目缺少 work/03_paper/paper.md 写作稿。', artifactRefs: [] };
+    }
+    if (markdown && meaningfulCharacterCount(await readUtf8(markdown)) < MIN_PAPER_CHARACTERS) {
+      return { ok: false, code: 'MARKDOWN_TOO_SHORT', reason: 'paper.md 正文篇幅不足，尚未形成完整论文写作稿。', artifactRefs: [markdown.relative] };
+    }
     const texFiles = paperFiles.filter((file) => file.ext === '.tex');
     const texSources = await Promise.all(texFiles.map(async (file) => ({ file, source: await readUtf8(file) })));
     const entry = texSources.find((item) => /\\begin\s*\{document\}/.test(item.source))
@@ -297,6 +450,9 @@ async function validateStageArtifacts(root, stage) {
     const texSource = entry.source;
     if (!/\\begin\s*\{document\}/.test(texSource)) return { ok: false, code: 'TEX_INVALID', reason: '论文 TeX 不包含完整文档入口。', artifactRefs: [tex.relative] };
     if (!await validPdf(pdf)) return { ok: false, code: 'PDF_INVALID', reason: '论文 PDF 缺失或格式无效。', artifactRefs: [tex.relative] };
+    if (markdown?.modifiedAt && pdf?.modifiedAt && markdown.modifiedAt > pdf.modifiedAt + 10) {
+      return { ok: false, code: 'PDF_STALE', reason: 'paper.md 晚于最终 PDF，必须同步 TeX 并重新编译。', artifactRefs: [markdown.relative, tex.relative, pdf.relative] };
+    }
     const combinedTex = texSources.map((item) => item.source).join('\n');
     const referencedFigures = await validateReferencedFigures(root, path.dirname(tex.path), combinedTex, pdf);
     if (!referencedFigures.ok) {
@@ -334,15 +490,50 @@ async function validateStageArtifacts(root, stage) {
     if (referenceCount < 5) {
       return { ok: false, code: 'REFERENCES_INSUFFICIENT', reason: '专业参考文献数量不足。', artifactRefs: [tex.relative, pdf.relative, ...bibliographyFiles.map((file) => file.relative)] };
     }
-    if (stage === 'paper') return { ok: true, summary: '论文源码、引用图片与可打开 PDF 已通过门禁。', artifactRefs: [tex.relative, pdf.relative, ...referencedFigures.files.map((file) => file.relative)] };
 
-    const reviewFiles = await listFiles(root, 'work/04_review');
+    const analysisFiles = await listFiles(view, 'work/01_analysis');
+    const subproblemsFile = analysisFiles.find((file) => file.name.toLowerCase() === 'subproblems.yaml');
+    if (!subproblemsFile) {
+      return { ok: false, code: 'SUBPROBLEMS_CONTRACT_MISSING', reason: 'Paper provenance requires the analysis subproblem contract.', artifactRefs: [tex.relative, pdf.relative] };
+    }
+    const evidenceManifestFile = paperFiles.find((file) => file.name.toLowerCase() === 'evidence_manifest.yaml');
+    if (!evidenceManifestFile) {
+      return { ok: false, code: 'EVIDENCE_MANIFEST_MISSING', reason: 'Paper and review require work/03_paper/evidence_manifest.yaml.', artifactRefs: [tex.relative, pdf.relative] };
+    }
+    let subproblemsContract;
+    let evidenceManifest;
+    try {
+      subproblemsContract = YAML.parse(await readUtf8(subproblemsFile));
+    } catch {
+      return { ok: false, code: 'SUBPROBLEMS_CONTRACT_INVALID', reason: 'subproblems.yaml is not valid YAML.', artifactRefs: [subproblemsFile.relative] };
+    }
+    try {
+      evidenceManifest = YAML.parse(await readUtf8(evidenceManifestFile));
+    } catch {
+      return { ok: false, code: 'EVIDENCE_MANIFEST_INVALID', reason: 'evidence_manifest.yaml is not valid YAML.', artifactRefs: [evidenceManifestFile.relative] };
+    }
+    const inputValidation = await validateSubproblemInputs(subproblemsContract, { artifactExists });
+    if (!inputValidation.ok) {
+      return contractFailure(inputValidation, [subproblemsFile.relative]);
+    }
+    const evidenceValidation = await validateEvidenceManifest(evidenceManifest, subproblemsContract, {
+      artifactExists,
+      artifactReader,
+      referencedFigurePaths: referencedFigures.files.map((file) => file.relative),
+    });
+    if (!evidenceValidation.ok) {
+      return contractFailure(evidenceValidation, [subproblemsFile.relative, evidenceManifestFile.relative]);
+    }
+    const sourceRefs = [markdown?.relative, tex.relative, pdf.relative].filter(Boolean);
+    if (stage === 'paper') return { ok: true, summary: '论文源码、证据清单、引用图片与可打开 PDF 已通过门禁。', artifactRefs: [...sourceRefs, evidenceManifestFile.relative, ...referencedFigures.files.map((file) => file.relative)] };
+
+    const reviewFiles = await listFiles(view, 'work/04_review');
     const audit = [...reviewFiles, ...paperFiles].find((file) => /(?:paper.*audit|quality.*audit|audit.*paper).*\.md$/i.test(file.name));
     if (!audit) return { ok: false, code: 'AUDIT_MISSING', reason: '质量审查未生成有效审计报告。', artifactRefs: [tex.relative, pdf.relative] };
     if (meaningfulCharacterCount(await readUtf8(audit)) < 800) {
       return { ok: false, code: 'AUDIT_TOO_SHORT', reason: '质量审查报告过短，未覆盖内容、排版、图表与真实性检查。', artifactRefs: [tex.relative, pdf.relative, audit.relative] };
     }
-    return { ok: true, summary: '最终论文与质量审计报告均已验证。', artifactRefs: [tex.relative, pdf.relative, audit.relative] };
+    return { ok: true, summary: '最终论文、证据清单与质量审计报告均已验证。', artifactRefs: [...sourceRefs, evidenceManifestFile.relative, audit.relative] };
   }
   return { ok: false, code: 'UNKNOWN_STAGE', reason: `未知阶段：${stage}`, artifactRefs: [] };
 }

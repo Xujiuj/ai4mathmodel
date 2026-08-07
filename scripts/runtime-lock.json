@@ -1,0 +1,27 @@
+{
+  "python": {
+    "version": "3.11.9",
+    "archive": "python-3.11.9-embed-amd64.zip",
+    "archiveSha256": "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b",
+    "executableSha256": "5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec"
+  },
+  "tectonic": {
+    "version": "0.15.0",
+    "executableSha256": "6760c6368d3219c687eb1811e55379af9526fbd97e97fa954968267f5241deb9",
+    "fontAliases": {
+      "simhei.ttf": "4afa97aa8751e0118617df88272b58d43691b5cffb7ea024c4580496e9f34d28",
+      "simkai.ttf": "ea7e7fb4f9b3ac694a68d43946e04d21deed6e8c29a7c2d3081e1a4138f2f827",
+      "simsun.ttf": "a3820003227d4abe31fe28b493200d94a849ccfd078b50a019264f70353020b0"
+    }
+  },
+  "guard": {
+    "scan.py": {
+      "size": 4411,
+      "sha256": "7f02a83d919de7fd806ae4646f8f361ac9cfbae79ad131e16f62fccc0fbeaf24"
+    },
+    "sandbox_entry.py": {
+      "size": 17480,
+      "sha256": "1fd3ae4241b3d8a074f7261cc8f0c75c23289e3486ae145b85864e21c1bd9852"
+    }
+  }
+}

@@ -33,12 +33,20 @@ function statusError(status) {
 
 function cleanTier(raw = {}) {
   const models = raw.models && typeof raw.models === 'object' ? raw.models : {};
+  const reasoning = String(models.reasoning || models.coordinator || models.modeler || raw.model || '').slice(0, 160);
+  const coding = String(models.coding || models.coder || reasoning || raw.model || '').slice(0, 160);
+  const writing = String(models.writing || models.writer || reasoning || raw.model || '').slice(0, 160);
   return {
     id: String(raw.id || '').slice(0, 40),
     label: String(raw.label || '').slice(0, 60),
     models: {
-      reasoning: String(models.reasoning || raw.model || '').slice(0, 160),
-      writing: String(models.writing || raw.model || '').slice(0, 160),
+      coordinator: String(models.coordinator || models.supervisor || reasoning).slice(0, 160),
+      modeler: String(models.modeler || models.analysis || reasoning).slice(0, 160),
+      coder: String(models.coder || coding).slice(0, 160),
+      writer: String(models.writer || writing).slice(0, 160),
+      reasoning,
+      coding,
+      writing,
       image: String(models.image || '').slice(0, 160),
     },
   };
@@ -51,7 +59,12 @@ function cleanCatalog(payload = {}, gateway = '') {
     baseUrl: String(payload.baseUrl || `${gateway}/v1`).slice(0, 2048),
     tiers,
     defaultTiers: {
+      coordinator: String(defaults.coordinator || defaults.supervisor || defaults.modeler || defaults.reasoning || tiers[0]?.id || '').slice(0, 40),
+      modeler: String(defaults.modeler || defaults.analysis || defaults.reasoning || tiers[0]?.id || '').slice(0, 40),
+      coder: String(defaults.coder || defaults.coding || defaults.reasoning || tiers[0]?.id || '').slice(0, 40),
+      writer: String(defaults.writer || defaults.writing || defaults.reasoning || tiers[0]?.id || '').slice(0, 40),
       reasoning: String(defaults.reasoning || tiers[0]?.id || '').slice(0, 40),
+      coding: String(defaults.coding || defaults.reasoning || tiers[0]?.id || '').slice(0, 40),
       writing: String(defaults.writing || defaults.reasoning || tiers[0]?.id || '').slice(0, 40),
       image: String(defaults.image || '').slice(0, 40),
     },
@@ -126,6 +139,12 @@ function createHostedClient({
   return {
     configured: () => hostedConfigured(endpoints),
 
+    async health() {
+      const payload = await request('/ready');
+      if (payload?.ok !== true) throw hostedError('HOSTED_NETWORK_ERROR');
+      return { available: true, checkedAt: now() };
+    },
+
     async signedIn() {
       return Boolean(await session.credential());
     },
@@ -147,10 +166,34 @@ function createHostedClient({
       return cleanAccount(payload?.account || {});
     },
 
+    async register({ email, password }) {
+      const payload = await request('/auth/register', {
+        method: 'POST',
+        body: {
+          email: String(email || '').slice(0, 160),
+          password: String(password || '').slice(0, 200),
+          deviceId: await session.deviceId(),
+        },
+      });
+      const value = String(payload?.credential || '');
+      if (!value) throw hostedError('HOSTED_AUTH_FAILED');
+      await session.setCredential(value, payload?.email || email);
+      tokenCache = null;
+      catalogCache = null;
+      return cleanAccount(payload?.account || {});
+    },
+
     async logout() {
       tokenCache = null;
       catalogCache = null;
-      await session.clear();
+      const current = await session.credential().catch(() => '');
+      try {
+        if (current) await request('/auth/logout', { method: 'POST', token: current });
+      } catch {
+        // Local sign-out must remain available while the hosted service is offline.
+      } finally {
+        await session.clear();
+      }
     },
 
     // 短期访问令牌只驻留内存，不经 IPC 下发到渲染层。
@@ -197,16 +240,17 @@ function createHostedClient({
       return url;
     },
 
-    async billing(requestIds = []) {
+    async billing(requestIds = [], pipelineId = '') {
       const ids = [...new Set((Array.isArray(requestIds) ? requestIds : [])
         .map((value) => String(value || '').trim().slice(0, 160))
         .filter(Boolean))].slice(0, 72);
-      if (!ids.length) throw hostedError('HOSTED_RESPONSE_INVALID');
+      const runId = String(pipelineId || '').trim().slice(0, 160);
+      if (!ids.length || !runId || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(runId)) throw hostedError('HOSTED_RESPONSE_INVALID');
       const payload = await request('/billing', {
         method: 'POST',
         token: await this.accessToken(),
         deviceId: await session.deviceId(),
-        body: { requestIds: ids },
+        body: { pipelineId: runId, requestIds: ids },
       });
       const missingRequestIds = Array.isArray(payload?.missingRequestIds)
         ? payload.missingRequestIds.map((value) => String(value || '').slice(0, 160)).filter(Boolean)

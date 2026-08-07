@@ -7,8 +7,10 @@ const ExcelJS = require('exceljs');
 
 const profile = path.join(app.getPath('temp'), `math-modeling-workbench-qa-${Date.now()}`);
 const dummyApiKeys = {
-  reasoning: `qa-reasoning-${Date.now()}`,
-  writing: `qa-writing-${Date.now()}`,
+  coordinator: `qa-coordinator-${Date.now()}`,
+  modeler: `qa-modeler-${Date.now()}`,
+  coder: `qa-coder-${Date.now()}`,
+  writer: `qa-writer-${Date.now()}`,
   image: `qa-image-${Date.now()}`,
 };
 const spreadsheetFixture = path.resolve(__dirname, '..', '..', 'work', '04_review', 'desktop-preview-qa.xlsx');
@@ -96,16 +98,19 @@ app.whenReady().then(async () => {
     const candidateSettings = {
       ...original,
       connections: {
-        reasoning: { baseUrl: ${JSON.stringify(modelBaseUrl)} + '/v1', protocol: 'auto', model: 'qa-primary-model', apiKey: ${JSON.stringify(dummyApiKeys.reasoning)} },
-        writing: { baseUrl: ${JSON.stringify(modelBaseUrl)} + '/v1', protocol: 'auto', model: 'qa-secondary-model', apiKey: ${JSON.stringify(dummyApiKeys.writing)} },
+        coordinator: { baseUrl: ${JSON.stringify(modelBaseUrl)} + '/v1', protocol: 'auto', model: 'qa-coordinator-model', apiKey: ${JSON.stringify(dummyApiKeys.coordinator)} },
+        modeler: { baseUrl: ${JSON.stringify(modelBaseUrl)} + '/v1', protocol: 'auto', model: 'qa-modeler-model', apiKey: ${JSON.stringify(dummyApiKeys.modeler)} },
+        coder: { baseUrl: ${JSON.stringify(modelBaseUrl)} + '/v1', protocol: 'auto', model: 'qa-coder-model', apiKey: ${JSON.stringify(dummyApiKeys.coder)} },
+        writer: { baseUrl: ${JSON.stringify(modelBaseUrl)} + '/v1', protocol: 'auto', model: 'qa-writer-model', apiKey: ${JSON.stringify(dummyApiKeys.writer)} },
         image: { baseUrl: ${JSON.stringify(modelBaseUrl)}, protocol: 'ollama', model: 'qa-image-model', apiKey: ${JSON.stringify(dummyApiKeys.image)} }
       }
     };
-    const discoveredBeforeSave = Object.fromEntries(await Promise.all(['reasoning', 'writing', 'image'].map(async (connection) => [connection, await api.listModels(candidateSettings, connection)])));
+    const roleConnections = ['coordinator', 'modeler', 'coder', 'writer', 'image'];
+    const discoveredBeforeSave = Object.fromEntries(await Promise.all(roleConnections.map(async (connection) => [connection, await api.listModels(candidateSettings, connection)])));
     const saved = await api.saveSettings(candidateSettings);
     window.__qaCredentialSettings = saved;
     const reread = await api.getSettings();
-    const discoveredAfterSave = Object.fromEntries(await Promise.all(['reasoning', 'writing', 'image'].map(async (connection) => [connection, await api.listModels(reread, connection)])));
+    const discoveredAfterSave = Object.fromEntries(await Promise.all(roleConnections.map(async (connection) => [connection, await api.listModels(reread, connection)])));
     const existingCheckpoints = await api.listCheckpoints(project.root);
     const checkpoint = existingCheckpoints.find((item) => item.label === '自动化验收检查点')
       || await api.createCheckpoint(project.root, '自动化验收检查点');
@@ -120,8 +125,13 @@ app.whenReady().then(async () => {
         pdfPreview,
       },
       settings: {
-        models: Object.fromEntries(Object.entries(saved.connections).map(([key, value]) => [key, value.model])),
-        apiKeysConfigured: Object.fromEntries(Object.entries(reread.connections).map(([key, value]) => [key, value.apiKeyConfigured])),
+        models: Object.fromEntries(roleConnections.map((key) => [key, saved.connections[key]?.model || ''])),
+        legacyAliasModels: {
+          reasoning: saved.connections.reasoning?.model || '',
+          coding: saved.connections.coding?.model || '',
+          writing: saved.connections.writing?.model || '',
+        },
+        apiKeysConfigured: Object.fromEntries(roleConnections.map((key) => [key, reread.connections[key]?.apiKeyConfigured === true])),
         apiKeysHiddenOnSave: Object.values(saved.connections).every((value) => value.apiKey === ''),
         apiKeysHiddenOnRead: Object.values(reread.connections).every((value) => value.apiKey === ''),
         discoveryBeforeSave: Object.fromEntries(Object.entries(discoveredBeforeSave).map(([key, value]) => [key, value.models])),
@@ -175,7 +185,7 @@ app.whenReady().then(async () => {
     }
     if (!document.querySelector('.outline-panel')) throw new Error('Project file panel was not rendered.');
     const folderLabels = [...document.querySelectorAll('.file-tree-folder-toggle span')].map((item) => item.textContent.trim());
-    const selectFile = async (relative) => {
+    const selectFile = async (relative, settle = true) => {
       const search = document.querySelector('.outline-search input');
       if (!search) throw new Error('Project file search was not rendered.');
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -185,7 +195,7 @@ app.whenReady().then(async () => {
       const button = [...document.querySelectorAll('.outline-files button')].find((item) => item.title?.startsWith(relative + '\\n'));
       if (!button) throw new Error('File was not listed: ' + relative);
       button.click();
-      await wait(500);
+      if (settle) await wait(500);
     };
     if (!window.__qaPaperTexRelative || !window.__qaPaperPdfRelative) throw new Error('No exact TeX/PDF pair was found for QA.');
     await selectFile(window.__qaPaperTexRelative);
@@ -215,8 +225,44 @@ app.whenReady().then(async () => {
     const csvGridVisible = Boolean(document.querySelector('.spreadsheet-grid'));
     await selectFile('work/04_review/desktop-preview-qa.xlsx');
     const spreadsheetGrid = document.querySelector('.spreadsheet-grid');
-    await selectFile(window.__qaPaperPdfRelative);
-    const pdfFrame = document.querySelector('iframe.native-pdf');
+    const initialPdfState = new Promise((resolve) => {
+      let timer;
+      const finish = (value) => {
+        observer.disconnect();
+        if (timer) window.clearTimeout(timer);
+        resolve(value || '');
+      };
+      const observer = new MutationObserver(() => {
+        const preview = document.querySelector('.native-pdf-preview');
+        if (preview) finish(preview.dataset.pdfState);
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      timer = window.setTimeout(() => finish(document.querySelector('.native-pdf-preview')?.dataset.pdfState), 2000);
+    });
+    await selectFile(window.__qaPaperPdfRelative, false);
+    const pdfLoadingState = await initialPdfState === 'loading';
+    for (let attempt = 0; attempt < 40 && !document.querySelector('.native-pdf-preview'); attempt += 1) await wait(50);
+    const pdfPreview = document.querySelector('.native-pdf-preview');
+    const pdfTimeoutContract = Number(pdfPreview?.dataset.pdfTimeoutMs || 0) > 0;
+    const pdfFrame = pdfPreview?.querySelector('iframe.native-pdf');
+    if (!pdfFrame) throw new Error('Native PDF preview was not rendered.');
+    const waitForPdfState = async (expected, timeout = 2000) => {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        if (document.querySelector('.native-pdf-preview')?.dataset.pdfState === expected) return true;
+        await wait(20);
+      }
+      return document.querySelector('.native-pdf-preview')?.dataset.pdfState === expected;
+    };
+    await waitForPdfState('loaded', 8000);
+    pdfFrame.dispatchEvent(new Event('error', { bubbles: true }));
+    const pdfErrorState = await waitForPdfState('error');
+    const pdfErrorPreview = document.querySelector('.native-pdf-preview');
+    const pdfRecoveryVisible = Boolean(pdfErrorPreview?.querySelector('.native-pdf-recovery'));
+    pdfFrame.dispatchEvent(new Event('load', { bubbles: true }));
+    const pdfLoadedState = await waitForPdfState('loaded');
+    const pdfLoadedPreview = document.querySelector('.native-pdf-preview');
+    const pdfLoadedStatusHidden = !pdfLoadedPreview?.querySelector('.native-pdf-status');
     const pdfFocusWorkspace = document.querySelector('.pdf-document-workspace');
     const pdfDocumentTabsHidden = !document.querySelector('.document-tabs');
     const pdfFilePanelHidden = !document.querySelector('.utility-sidebar');
@@ -231,6 +277,12 @@ app.whenReady().then(async () => {
       textEditorVisible,
       pdfFrameVisible: Boolean(pdfFrame),
       pdfFrameUsesProjectProtocol: Boolean(pdfFrame?.getAttribute('src')?.startsWith('modeling-file://local/')),
+      pdfLoadingState,
+      pdfTimeoutContract,
+      pdfErrorState,
+      pdfRecoveryVisible,
+      pdfLoadedState,
+      pdfLoadedStatusHidden,
       pdfFocusWorkspace: Boolean(pdfFocusWorkspace),
       pdfDocumentTabsHidden,
       pdfFilePanelHidden,
@@ -272,14 +324,14 @@ app.whenReady().then(async () => {
     const modal = document.querySelector('.modal');
     const scrollSurface = document.querySelector('.settings-content');
     const modeTabs = [...document.querySelectorAll('.settings-mode-tabs button')];
-    const hostedTab = modeTabs.find((item) => item.textContent.includes('官方托管'));
-    const localTab = modeTabs.find((item) => item.textContent.includes('自带模型'));
-    hostedTab?.click();
-    await wait(80);
     const hostedPanelVisible = Boolean(document.querySelector('.account-panel'))
       && !document.querySelector('.connection-block');
-    localTab?.click();
+    const hostedTab = modeTabs[0];
+    hostedTab?.click();
     await wait(80);
+    const localTab = [...document.querySelectorAll('.settings-mode-tabs button')][1];
+    localTab?.click();
+    for (let attempt = 0; attempt < 10 && !document.querySelector('.settings-connection-tabs button'); attempt += 1) await wait(80);
     const tabs = [...document.querySelectorAll('.settings-connection-tabs button')];
     const titles = [];
     let connectionActionVisible = true;
@@ -293,18 +345,35 @@ app.whenReady().then(async () => {
     const canScroll = Boolean(scrollSurface && scrollSurface.scrollHeight > scrollSurface.clientHeight);
     if (scrollSurface) scrollSurface.scrollTop = scrollSurface.scrollHeight;
     const scrollMoved = Boolean(scrollSurface && scrollSurface.scrollTop > 0);
+    const updateCenter = document.querySelector('.update-center');
+    const updateGroups = [...document.querySelectorAll('.update-center .update-group')];
+    const appUpdateButtons = [...(updateGroups[0]?.querySelectorAll('button') || [])];
+    const componentUpdateButtons = [...(updateGroups[1]?.querySelectorAll('button') || [])];
+    appUpdateButtons[0]?.click();
+    let appUpdateStatus = '';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await wait(100);
+      appUpdateStatus = updateGroups[0]?.querySelector('.update-meta small')?.textContent || '';
+      if (appUpdateStatus.includes('\u5f00\u53d1\u6a21\u5f0f')) break;
+    }
     if (scrollSurface) scrollSurface.scrollTop = 0;
     return {
       twoModeTabs: modeTabs.length === 2,
       hostedPanelVisible,
-      threeConnectionTabs: tabs.length === 3,
-      switchesConnections: titles.join('|') === '推理与代码模型|文本模型|生图模型（可选）',
+        fiveConnectionTabs: tabs.length === 5,
+        switchesConnections: titles.join('|') === '协调与总控模型|分析与评审模型|代码求解模型|论文写作模型|生图模型（可选）',
       connectionActionVisible,
       appearanceControls: document.querySelectorAll('.appearance-segments button').length === 3,
       localConfigImportActions: document.querySelectorAll('.local-config-actions button').length === 2,
       fitsViewport: Boolean(rect && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight),
       canScroll,
       scrollMoved,
+      updateCenterVisible: Boolean(updateCenter),
+      appUpdateActionsVisible: appUpdateButtons.length === 3,
+      componentUpdateActionVisible: componentUpdateButtons.length === 2
+        && componentUpdateButtons.some((item) => item.textContent.includes('\u68c0\u67e5\u7ec4\u4ef6'))
+        && componentUpdateButtons.some((item) => item.textContent.includes('\u5b89\u88c5\u7ec4\u4ef6')),
+      updaterDevModeHandled: appUpdateStatus.includes('\u5f00\u53d1\u6a21\u5f0f'),
     };
   })()`);
   const settingsScreenshot = await window.webContents.capturePage();
@@ -336,16 +405,23 @@ app.whenReady().then(async () => {
   assert.equal(output.paper.pdfPreview?.contentType, 'application/pdf');
   assert.equal(output.fullPipelineApiAvailable, true);
   assert.deepEqual(output.settings.models, {
-    reasoning: 'qa-primary-model',
-    writing: 'qa-secondary-model',
+    coordinator: 'qa-coordinator-model',
+    modeler: 'qa-modeler-model',
+    coder: 'qa-coder-model',
+    writer: 'qa-writer-model',
     image: 'qa-image-model',
+  });
+  assert.deepEqual(output.settings.legacyAliasModels, {
+    reasoning: 'qa-modeler-model',
+    coding: 'qa-coder-model',
+    writing: 'qa-writer-model',
   });
   assert.equal(Object.values(output.settings.apiKeysConfigured).every(Boolean), true);
   assert.equal(output.settings.apiKeysHiddenOnSave, true);
   assert.equal(output.settings.apiKeysHiddenOnRead, true);
   assert.equal(Object.values(output.settings.discoveryBeforeSave).every((models) => models.length >= 2), true);
   assert.equal(Object.values(output.settings.discoveryAfterSave).every((models) => models.length >= 2), true);
-  assert.equal(output.security.encryptedEntryCount, 3);
+  assert.equal(output.security.encryptedEntryCount, 5);
   assert.equal(output.security.settingsContainPlaintext, false);
   assert.equal(output.security.credentialsContainPlaintext, false);
   assert.equal(Object.values(dummyApiKeys).every((key) => output.security.modelRequests.some((request) => request.authorization === `Bearer ${key}`)), true);
@@ -367,9 +443,9 @@ app.whenReady().then(async () => {
   const target = path.join(__dirname, '..', 'electron-qa-result.json');
   fs.writeFileSync(target, JSON.stringify(output, null, 2), 'utf8');
   console.log(JSON.stringify(output, null, 2));
-  window.destroy();
-  modelServer.close();
-  app.quit();
+  // This isolated harness owns no persistent work; bypass a Windows Electron
+  // teardown bug that otherwise changes a fully passing run to exit code 1.
+  process.exit(0);
 }).catch((error) => {
   console.error(error);
   modelServer.close();

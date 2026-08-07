@@ -1,12 +1,23 @@
 {
+  "host": "127.0.0.1",
   "port": 8788,
   "upstream": "http://127.0.0.1:8080",
   "publicBaseUrl": "https://gw.example.com",
   "portal": "https://portal.example.com",
   "tokenSecret": "change-me-32-bytes-minimum-secret",
   "keySecret": "change-me-another-32-bytes-secret",
+  "identityProvider": {
+    "mode": "account-api",
+    "baseUrl": "http://127.0.0.1:18090",
+    "serviceToken": "change-me-shared-account-api-service-token"
+  },
+  "serviceApiKey": "",
+  "imageGatewayBaseUrl": "http://127.0.0.1:8000",
   "accessTokenTtlSeconds": 900,
   "requestTimeoutMs": 600000,
+  "imageRequestTimeoutMs": 120000,
+  "requestBodyTimeoutMs": 15000,
+  "requestBodyInactivityTimeoutMs": 5000,
   "maxBodyBytes": 8388608,
   "operations": {
     "rateLimit": {
@@ -20,10 +31,35 @@
       "maxTrackedIdentities": 10000,
       "trustProxy": false
     },
+    "tokenRateLimit": {
+      "windowMs": 900000,
+      "maxAttempts": 8,
+      "maxTrackedIdentities": 10000
+    },
+    "billingRateLimit": {
+      "windowMs": 60000,
+      "maxRequests": 30,
+      "maxTrackedDevices": 10000
+    },
+    "accountRateLimit": {
+      "windowMs": 60000,
+      "maxRequests": 30,
+      "maxTrackedDevices": 10000
+    },
+    "billingAccountRateLimit": {
+      "windowMs": 60000,
+      "maxRequests": 30,
+      "maxTrackedDevices": 10000
+    },
     "admission": {
       "maxConcurrent": 4,
       "maxQueued": 24,
       "queueTimeoutMs": 300000
+    },
+    "billingAdmission": {
+      "maxConcurrent": 2,
+      "maxQueued": 8,
+      "queueTimeoutMs": 10000
     },
     "shutdownGraceMs": 30000,
     "metrics": {
@@ -39,16 +75,26 @@
       "id": "standard",
       "label": "标准",
       "models": {
+        "coordinator": "gpt-5.6-sol",
+        "modeler": "gpt-5.6-sol",
+        "coder": "gpt-5.6-terra",
+        "writer": "claude-sonnet-5",
+        "image": "gpt-image-2",
         "reasoning": "gpt-5.6-sol",
-        "writing": "gpt-5.6-sol",
-        "image": "gpt-image-2"
+        "coding": "gpt-5.6-terra",
+        "writing": "claude-sonnet-5"
       }
     }
   ],
   "defaultTiers": {
+    "coordinator": "standard",
+    "modeler": "standard",
+    "coder": "standard",
+    "writer": "standard",
+    "image": "standard",
     "reasoning": "standard",
-    "writing": "standard",
-    "image": "standard"
+    "coding": "standard",
+    "writing": "standard"
   },
   "sub2api": {
     "loginPath": "/api/v1/auth/login",
@@ -57,6 +103,11 @@
     "usageListPath": "/api/v1/usage",
     "apiKeysPath": "/api/v1/keys",
     "topUpPath": "/purchase",
-    "topUpEnabled": false
+    "topUpEnabled": false,
+    "billingConcurrency": 4,
+    "billingService": {
+      "email": "billing-service@example.com",
+      "password": "change-me-sub2api-billing-password"
+    }
   }
 }

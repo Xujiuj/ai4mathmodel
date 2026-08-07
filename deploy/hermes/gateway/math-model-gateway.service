@@ -1,0 +1,24 @@
+[Unit]
+Description=Math Modeling authenticated relay gateway
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mathgateway
+Group=mathgateway
+WorkingDirectory=/opt/math-model-gateway
+Environment=NODE_ENV=production
+Environment=GATEWAY_CONFIG=/etc/math-model-gateway/config.json
+ExecStart=/usr/bin/node /opt/math-model-gateway/gateway/server.cjs
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/math-model-gateway /etc/math-model-gateway
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
