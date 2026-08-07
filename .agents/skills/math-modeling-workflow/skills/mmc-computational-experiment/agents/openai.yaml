@@ -1,0 +1,5 @@
+interface:
+  display_name: "mmc-computational-experiment"
+  short_description: "Run reproducible modeling experiments and persist evidence"
+  default_prompt: "Use -computational-experiment to implement, run, and persist reproducible solutions for every subproblem."
+

@@ -27,7 +27,7 @@ test('compileRules removes frontmatter, workflow metadata, paths, and prompt mat
   const rules = compileRules(`---\nname: private\n---\n# Useful rules\n\nUse verified data and reproducible code.\n| Column | Value |\n|---|---|\n- [x] Completed setup\n--input private.csv\nRead C:\\Users\\secret\\SKILL.md before acting.\nCall gpt-image with prompt_text.\n## Checkpoint\n${repeated}`);
   const output = rules.join('\n');
   assert.match(output, /verified data/);
-  assert.doesNotMatch(output, /private|SKILL\.md|C:\\Users|gpt-image|prompt|checkpoint|Column|Completed setup|--input/i);
+  assert.doesNotMatch(output, /private|SKILL\.md|C:\\Users|gpt-image|prompt|checkpoint|Column|Completed setup|--input|references\//i);
   assert.equal(rules.length, MAX_RULES_PER_SKILL);
 });
 
@@ -59,6 +59,18 @@ test('runtime rejects a tampered bundle', () => {
   assert.throws(() => verifyBundle(tampered), (error) => error.code === 'AGENT_SKILL_BUNDLE_TAMPERED');
 });
 
+test('build and runtime reject self-consistent obsolete or incomplete bundles', () => {
+  const obsolete = withIntegrity({ ...bundle, bundleVersion: '1' });
+  const incompleteStage = withIntegrity({
+    ...bundle,
+    stages: { ...bundle.stages, review: { skillIds: [], rules: [] } },
+  });
+  for (const candidate of [obsolete, incompleteStage]) {
+    assert.throws(() => verifyBundle(candidate), (error) => error.code === 'AGENT_SKILL_BUNDLE_INVALID');
+    assert.throws(() => validateBundledFallback(candidate), (error) => error.code === 'AGENT_SKILL_BUNDLE_INVALID');
+  }
+});
+
 test('clean release builds may reuse only a complete integrity-verified skill bundle', async (context) => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'mmw-skills-fallback-'));
   context.after(() => fsp.rm(root, { recursive: true, force: true }));
@@ -81,13 +93,15 @@ test('clean release builds fail when the committed skill bundle is absent', asyn
 });
 
 test('stage allowlists isolate compiled skills and contain no private source markers', () => {
-  assert.deepEqual(bundle.stages.analysis.skillIds.includes('mmc-modeling-solver'), false);
-  assert.deepEqual(bundle.stages.solving.skillIds.includes('mmc-problem-analysis'), false);
-  assert.deepEqual(bundle.stages.paper.skillIds.includes('mmc-modeling-solver'), false);
+  assert.deepEqual(bundle.stages.analysis.skillIds.includes('mmc-computational-experiment'), false);
+  assert.deepEqual(bundle.stages.solving.skillIds.includes('mmc-problem-intake'), false);
+  assert.deepEqual(bundle.stages.paper.skillIds.includes('mmc-computational-experiment'), false);
+  assert.deepEqual(bundle.stages.review.skillIds.includes('mmc-submission-audit'), true);
   assert.equal(skillGuidanceForStage('unknown'), '');
   const serialized = JSON.stringify(bundle);
   assert.doesNotMatch(serialized, /SKILL\.md|AGENTS\.md|[A-Za-z]:[\\/]|(?:\/Users\/|\/home\/)/i);
   assert.doesNotMatch(serialized, /gpt-image|prompt|secret|api key/i);
+  assert.doesNotMatch(serialized, /references?[\\/][^\s)]+/i);
   for (const stage of Object.values(bundle.stages)) {
     assert.ok(stage.rules.length <= MAX_RULES_PER_STAGE);
     assert.ok(stage.rules.join('\n').length <= MAX_STAGE_CHARS);
@@ -98,7 +112,7 @@ test('stage allowlists isolate compiled skills and contain no private source mar
 test('stagePrompt injects verified compiled rules into the existing playbook', () => {
   const prompt = stagePrompt(path.join(os.tmpdir(), 'mmw-project'), 'analysis');
   assert.match(prompt, /Compiled scientific skill rules \(stage-scoped\)/);
-  assert.match(prompt, /mmc-problem-analysis/);
+  assert.match(prompt, /mmc-problem-intake/);
   assert.equal(prompt.includes('C:\\Users\\'), false);
 });
 
@@ -108,8 +122,8 @@ test('packaged builds keep compiled skill rules inside the protected runtime', (
   assert.equal(packageJson.build.files.includes('electron/protected/runtime.bin'), true);
 });
 
-test('generated bundle keeps optional academic plotting non-blocking', async () => {
-  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'mmw-skills-optional-'));
+test('generated bundle is self-contained and requires every workflow skill', async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'mmw-skills-self-contained-'));
   const sourceRoot = path.join(root, 'skills');
   for (const definition of REQUIRED_SKILLS) {
     const directory = path.join(sourceRoot, definition.relative);
@@ -117,8 +131,9 @@ test('generated bundle keeps optional academic plotting non-blocking', async () 
     await fsp.writeFile(path.join(directory, 'SKILL.md'), `# ${definition.id}\nUse verified data and reproducible code.`, 'utf8');
   }
   const outputPath = path.join(root, 'bundle.json');
-  const compiled = await compileAgentSkills({ skillsRoot: sourceRoot, optionalAcademicPlottingRoot: path.join(root, 'does-not-exist'), outputPath });
-  assert.equal(compiled.sources.some((source) => source.id === 'academic-plotting'), false);
+  const compiled = await compileAgentSkills({ skillsRoot: sourceRoot, outputPath });
+  assert.deepEqual(compiled.sources.map((source) => source.id), REQUIRED_SKILLS.map((skill) => skill.id));
+  assert.equal(compiled.sources.every((source) => source.required), true);
   assert.equal(fs.existsSync(outputPath), true);
   await fsp.rm(root, { recursive: true, force: true });
 });

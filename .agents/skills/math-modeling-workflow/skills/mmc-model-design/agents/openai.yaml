@@ -1,0 +1,5 @@
+interface:
+  display_name: "mmc-model-design"
+  short_description: "Design implementable and testable math models"
+  default_prompt: "Use -model-design to compare candidate methods and produce an implementable mathematical model contract."
+

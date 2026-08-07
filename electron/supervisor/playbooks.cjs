@@ -43,6 +43,10 @@ const STAGE_PLAYBOOKS = Object.freeze({
       primary_method: "选定方法及其适用理由"
       validation_requirements: ["必须通过的基线、误差或稳健性检查"]
 - work/01_analysis/figures/：仅保留被 analysis.md 实际引用的最终示意图；没有必要时可以为空。
+- work/01_analysis/data_profile.yaml：输入表结构、单位、缺失、异常、时间范围和连接键。
+- work/01_analysis/model_contract.yaml、model_design.md：候选方法比较、选型理由、数学合同、失败模式和回退方法。
+- work/01_analysis/validation_plan.yaml、figure_plan.yaml：逐问可信度验证合同和论证型图表计划。
+- work/01_analysis/literature/evidence_map.yaml、search_log.md、references.bib、method_notes.md：经过元数据核验的文献证据线；只有 verified 记录可进入论文。
 `,
   solving: `
 Local execution contract:
@@ -85,6 +89,9 @@ Local execution contract:
       summary: "具体说明最终指标、基线比较、误差和稳健性结论"
       headline_metrics:
         score: 0.0
+- work/02_solving/environment.yaml：运行时、依赖、随机种子和关键配置。
+- work/02_solving/validation_report.yaml、validation_summary.md：基线、诊断、不确定性、敏感性和稳健性检查，失败项不得隐藏。
+- work/02_solving/figures/figure_manifest.yaml：每幅图的论文结论、数据定位器、生成代码、导出文件和最终尺寸质检状态。
 `,
   paper: `
 系统会在工作区为空时预先复制完整模板。若 work/03_paper/ 已存在任何模板或论文文件，直接在现有副本上继续，不得再次覆盖复制；只有目录确实为空时才从 inputs/template/ 初始化。
@@ -127,6 +134,9 @@ Local execution contract:
 最终产物：
 - work/03_paper/ 下的最终入口 .tex、必要 .bib/.cls/.sty、evidence_manifest.yaml、被引用图表资源和同名可打开 PDF。
 - work/04_review/paper_quality_audit.md：记录可核验的篇幅、结构、公式、图表、参考文献、溯源和编译检查结果；不记录内部调度信息。
+- 论文中的文献只允许来自 work/01_analysis/literature/evidence_map.yaml 中 verified 的记录；缺失支持必须回到文献证据阶段处理。
+- 将 verified 文献规范化写入 work/03_paper/ 下的 .bib 文件，并保持 evidence ID 可追溯。
+- work/03_paper/prose_polish_report.yaml：独立记录论证、过度声称、段落职责、术语和语言问题；该审阅只提供建议，由论文作者应用到最终源文件。
 `,
   review: `
 目标：以提交前终审标准检查并直接修复论文，最终留下可提交 PDF 和简洁、可核验的质量报告。
@@ -141,6 +151,8 @@ Local execution contract:
 最终产物：
 - 覆盖 work/03_paper/ 中的修订版 TeX 与同名最终 PDF。
 - work/04_review/paper_quality_audit.md：只写最终检查项、证据位置、已修复问题和仍存在的客观限制，不包含模型、角色、重试或内部策略。
+- work/04_review/figure_audit.md：记录最终尺寸下的清晰度、重叠、裁切、单位、图例、色彩可达性和数据一致性。
+- work/04_review/release_manifest.yaml：登记最终源文件与 PDF、文件哈希、审计结论和提交就绪状态。
 `,
 });
 

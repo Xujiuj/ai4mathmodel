@@ -1,42 +1,31 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
+const {
+  BUNDLE_VERSION,
+  REQUIRED_SOURCE_IDS,
+  STAGE_SKILL_IDS,
+  assertBundleStructure,
+} = require('../electron/supervisor/agent-skills-contract.cjs');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_SKILLS_ROOT = process.env.AGENT_SKILLS_ROOT
   ? path.resolve(process.env.AGENT_SKILLS_ROOT)
-  : path.resolve(PROJECT_ROOT, '..', '.agents', 'skills');
-const DEFAULT_OPTIONAL_PLOTTING_ROOT = process.env.ACADEMIC_PLOTTING_SKILL_ROOT
-  ? path.resolve(process.env.ACADEMIC_PLOTTING_SKILL_ROOT)
-  : path.join(os.homedir(), '.orchestra', 'skills', '20-ml-paper-writing', 'academic-plotting');
+  : path.resolve(PROJECT_ROOT, '.agents', 'skills');
 const DEFAULT_OUTPUT = path.join(PROJECT_ROOT, 'electron', 'generated', 'agent-skills.bundle.json');
-const BUNDLE_VERSION = '1';
 const MAX_RULES_PER_SKILL = 20;
-const MAX_RULES_PER_STAGE = MAX_RULES_PER_SKILL * 4;
+const MAX_RULES_PER_STAGE = MAX_RULES_PER_SKILL * 7;
 const MAX_RULE_CHARS = 360;
 const MAX_STAGE_CHARS = 12_000;
 const MAX_SUMMARY_CHARS = 320;
 
-const REQUIRED_SKILLS = Object.freeze([
-  { id: 'mmc-problem-analysis', relative: path.join('math-modeling-competition', 'skills', 'mmc-problem-analysis') },
-  { id: 'mmc-modeling-solver', relative: path.join('math-modeling-competition', 'skills', 'mmc-modeling-solver') },
-  { id: 'mmc-paper-writing', relative: path.join('math-modeling-competition', 'skills', 'mmc-paper-writing') },
-  { id: 'mmc-orchestrator', relative: path.join('math-modeling-competition', 'skills', 'mmc-orchestrator') },
-  { id: 'nature-figure', relative: path.join('nature-figure') },
-]);
+const REQUIRED_SKILLS = Object.freeze(REQUIRED_SOURCE_IDS.map((id) => ({
+  id,
+  relative: path.join('math-modeling-workflow', 'skills', id),
+})));
 
-const OPTIONAL_SKILLS = Object.freeze([
-  { id: 'academic-plotting', relative: 'SKILL.md' },
-]);
-
-const STAGE_ALLOWLIST = Object.freeze({
-  analysis: Object.freeze(['mmc-problem-analysis', 'mmc-orchestrator', 'nature-figure', 'academic-plotting']),
-  solving: Object.freeze(['mmc-modeling-solver', 'mmc-orchestrator', 'nature-figure', 'academic-plotting']),
-  paper: Object.freeze(['mmc-paper-writing', 'mmc-orchestrator', 'nature-figure', 'academic-plotting']),
-  review: Object.freeze(['mmc-paper-writing', 'mmc-orchestrator', 'nature-figure', 'academic-plotting']),
-});
+const STAGE_ALLOWLIST = STAGE_SKILL_IDS;
 
 const META_LINE_PATTERNS = [
   /\bskill\.md\b/i,
@@ -45,6 +34,7 @@ const META_LINE_PATTERNS = [
   /\b(?:step\s+\d|use when|user invokes|slash command|reply\s+\*\*|run .*scripts?\/|bash .*\/scripts?\/|python .*\/scripts?\/)/i,
   /\$\{[^}]+\}|(?:^|\s)(?:[A-Za-z]:[\\/]|\\\\|\/Users\/|\/home\/|\/mnt\/|\/opt\/)/i,
   /(?:prompt|gpt-image|tool call|subprocess|os\.environ|secret|api key|token)/i,
+  /\]\(references?[\\/][^)]+\)|\breferences?[\\/][^\s)]+/i,
 ];
 
 const STRUCTURAL_LINE_PATTERNS = [
@@ -129,7 +119,7 @@ function canonicalPayload(bundle) {
   });
 }
 
-function resolveSources({ skillsRoot = DEFAULT_SKILLS_ROOT, optionalAcademicPlottingRoot = DEFAULT_OPTIONAL_PLOTTING_ROOT } = {}) {
+function resolveSources({ skillsRoot = DEFAULT_SKILLS_ROOT } = {}) {
   const sources = [];
   for (const definition of REQUIRED_SKILLS) {
     const file = path.join(skillsRoot, definition.relative, 'SKILL.md');
@@ -141,8 +131,6 @@ function resolveSources({ skillsRoot = DEFAULT_SKILLS_ROOT, optionalAcademicPlot
     }
     sources.push(compileSource({ id: definition.id, file, required: true }));
   }
-  const optionalFile = path.join(optionalAcademicPlottingRoot, OPTIONAL_SKILLS[0].relative);
-  if (fs.existsSync(optionalFile)) sources.push(compileSource({ id: 'academic-plotting', file: optionalFile, required: false }));
   return sources;
 }
 
@@ -186,36 +174,35 @@ function withIntegrity(bundle) {
 function validateBundledFallback(bundle) {
   const expected = String(bundle?.integrity?.sha256 || '');
   const actual = sha256(canonicalPayload(bundle || {}));
-  const sourceIds = new Set(Array.isArray(bundle?.sources) ? bundle.sources.map((source) => source?.id) : []);
-  if (bundle?.schemaVersion !== 1 || bundle?.bundleVersion !== BUNDLE_VERSION
-    || bundle?.integrity?.algorithm !== 'sha256' || !expected || expected !== actual
-    || REQUIRED_SKILLS.some((skill) => !sourceIds.has(skill.id))) {
+  if (bundle?.integrity?.algorithm !== 'sha256' || !expected || expected !== actual) {
     const error = new Error('Bundled agent skills failed integrity or completeness validation');
     error.code = 'AGENT_SKILL_BUNDLE_INVALID';
     throw error;
   }
-  return bundle;
+  return assertBundleStructure(bundle, {
+    code: 'AGENT_SKILL_BUNDLE_INVALID',
+    message: 'Bundled agent skills failed integrity or completeness validation',
+  });
 }
 
 function loadBundledFallback(outputPath = DEFAULT_OUTPUT) {
   return validateBundledFallback(JSON.parse(fs.readFileSync(outputPath, 'utf8')));
 }
 
-async function compileAgentSkills({ skillsRoot = DEFAULT_SKILLS_ROOT, optionalAcademicPlottingRoot = DEFAULT_OPTIONAL_PLOTTING_ROOT, outputPath = DEFAULT_OUTPUT } = {}) {
-  const bundle = withIntegrity(buildBundle(resolveSources({ skillsRoot, optionalAcademicPlottingRoot })));
+async function compileAgentSkills({ skillsRoot = DEFAULT_SKILLS_ROOT, outputPath = DEFAULT_OUTPUT } = {}) {
+  const bundle = withIntegrity(buildBundle(resolveSources({ skillsRoot })));
   await fsp.mkdir(path.dirname(outputPath), { recursive: true });
   await fsp.writeFile(outputPath, `${JSON.stringify(bundle, null, 2)}\n`, 'utf8');
   return bundle;
 }
 
 async function prepareAgentSkillsForBuild({
-  skillsRoot = process.env.AGENT_SKILLS_ROOT ? path.resolve(process.env.AGENT_SKILLS_ROOT) : null,
-  optionalAcademicPlottingRoot = DEFAULT_OPTIONAL_PLOTTING_ROOT,
+  skillsRoot = DEFAULT_SKILLS_ROOT,
   outputPath = DEFAULT_OUTPUT,
 } = {}) {
   if (skillsRoot) {
     return {
-      bundle: await compileAgentSkills({ skillsRoot, optionalAcademicPlottingRoot, outputPath }),
+      bundle: await compileAgentSkills({ skillsRoot, outputPath }),
       compiled: true,
     };
   }

@@ -1,0 +1,5 @@
+interface:
+  display_name: "mmc-prose-polish"
+  short_description: "Audit scientific argument and academic prose quality"
+  default_prompt: "Use -prose-polish to audit a modeling paper's argument, claims, and academic prose without changing scientific evidence."
+

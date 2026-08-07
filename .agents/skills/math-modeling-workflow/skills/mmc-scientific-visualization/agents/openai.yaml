@@ -1,0 +1,5 @@
+interface:
+  display_name: "mmc-scientific-visualization"
+  short_description: "Plan and audit publication-grade scientific figures"
+  default_prompt: "Use -scientific-visualization to create traceable publication figures and audit their visual evidence."
+

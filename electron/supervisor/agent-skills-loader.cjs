@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const bundle = require('../generated/agent-skills.bundle.json');
+const { assertBundleStructure } = require('./agent-skills-contract.cjs');
 
 function canonicalPayload(value) {
   return JSON.stringify({
@@ -18,7 +19,7 @@ function verifyBundle(value = bundle) {
     error.code = 'AGENT_SKILL_BUNDLE_TAMPERED';
     throw error;
   }
-  return value;
+  return assertBundleStructure(value);
 }
 
 function skillGuidanceForStage(stage, value = bundle) {

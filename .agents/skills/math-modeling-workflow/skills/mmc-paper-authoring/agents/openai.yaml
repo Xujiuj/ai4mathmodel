@@ -1,0 +1,5 @@
+interface:
+  display_name: "mmc-paper-authoring"
+  short_description: "Write evidence-grounded competition papers"
+  default_prompt: "Use -paper-authoring to assemble a competition paper from verified models, results, figures, and citations."
+

@@ -63,6 +63,23 @@ const SUBPROBLEMS_YAML = [
   '    validation_requirements: [Compare against a baseline.]',
 ].join('\n');
 
+async function writeEnhancedAnalysisContracts(directory) {
+  const literature = path.join(directory, 'literature');
+  await fsp.mkdir(literature, { recursive: true });
+  await Promise.all([
+    fsp.writeFile(path.join(directory, 'data_profile.yaml'), 'schema_version: 1\ndatasets:\n  - path: inputs/problem/statement.txt\n    status: profiled\n', 'utf8'),
+    fsp.writeFile(path.join(directory, 'model_contract.yaml'), 'schema_version: 1\nmodels:\n  - subproblem_id: sp-1\n    method: validated baseline\n', 'utf8'),
+    fsp.writeFile(path.join(directory, 'validation_plan.yaml'), 'schema_version: 1\nchecks:\n  - subproblem_id: sp-1\n    method: baseline comparison\n', 'utf8'),
+    fsp.writeFile(path.join(directory, 'figure_plan.yaml'), 'schema_version: 1\nfigures:\n  - id: fig-1\n    claim: model comparison\n', 'utf8'),
+    fsp.writeFile(path.join(literature, 'evidence_map.yaml'), 'schema_version: 1\nevidence:\n  - id: lit-1\n    claim: The method is applicable.\n    title: Verified modeling method\n    year: 2025\n    status: verified\n    verification_sources: [Crossref]\n', 'utf8'),
+    fsp.writeFile(path.join(literature, 'references.bib'), '@article{verified, title={Verified modeling method}, author={Author}, journal={Journal}, year={2025}}\n', 'utf8'),
+    fsp.writeFile(path.join(directory, 'intake_risks.md'), '# Intake risks\n\nAmbiguity, missing-data exposure, conservative interpretation, and resolution checks are recorded here. '.repeat(3), 'utf8'),
+    fsp.writeFile(path.join(directory, 'model_design.md'), '# Model design\n\nCandidate methods, equations, assumptions, baseline, interfaces, and failure conditions are compared. '.repeat(12), 'utf8'),
+    fsp.writeFile(path.join(literature, 'search_log.md'), '# Search log\n\nQuery, registry, date, scope, inclusion rationale, and exclusion rationale are recorded. '.repeat(5), 'utf8'),
+    fsp.writeFile(path.join(literature, 'method_notes.md'), '# Method notes\n\nApplicability, assumptions, evidence, strengths, limitations, and known failure modes are recorded. '.repeat(8), 'utf8'),
+  ]);
+}
+
 test('staging commit preserves the run snapshot and writes a committed marker', async () => {
   await withTempRoot(async (root) => {
     const runId = 'run-1';
@@ -74,6 +91,7 @@ test('staging commit preserves the run snapshot and writes a committed marker', 
     await fsp.writeFile(path.join(staging, 'problem_text.md'), PROBLEM_TEXT, 'utf8');
     await fsp.writeFile(path.join(staging, 'analysis.pdf'), ANALYSIS_PDF);
     await fsp.writeFile(path.join(staging, 'subproblems.yaml'), SUBPROBLEMS_YAML, 'utf8');
+    await writeEnhancedAnalysisContracts(staging);
     const view = stagingProjectView(root, runId);
     const gate = await validateStageArtifacts(view, 'analysis');
     assert.equal(gate.ok, true, gate.reason || '');
@@ -162,6 +180,7 @@ test('staging commit updates an existing stage without renaming its live directo
     await fsp.writeFile(path.join(staging, 'problem_text.md'), PROBLEM_TEXT, 'utf8');
     await fsp.writeFile(path.join(staging, 'analysis.pdf'), ANALYSIS_PDF);
     await fsp.writeFile(path.join(staging, 'subproblems.yaml'), SUBPROBLEMS_YAML, 'utf8');
+    await writeEnhancedAnalysisContracts(staging);
     const gate = await validateStageArtifacts(stagingProjectView(root, replacementRun), 'analysis');
     assert.equal(gate.ok, true, gate.reason || '');
 

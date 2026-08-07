@@ -9,6 +9,7 @@ import { StatusPill } from './Shell.jsx';
 const stageContent = {
   analysis: { title: '赛题解析', description: '集中查看赛题材料、问题拆解和建模方案。', prefixes: ['inputs/', 'work/01_analysis/'] },
   solving: { title: '模型求解', description: '集中查看关键代码、实验数据、结果表与图。', prefixes: ['work/01_analysis/', 'work/02_solving/'] },
+  paper: { title: '论文撰写', description: '集中查看论文源文件、证据清单、参考文献与编译结果。', prefixes: ['work/01_analysis/literature/', 'work/02_solving/', 'work/03_paper/'] },
   review: { title: '质量审查', description: '集中查看论文、编译结果和最终质量报告。', prefixes: ['work/03_paper/', 'work/04_review/'] },
 };
 

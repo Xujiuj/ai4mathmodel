@@ -1,0 +1,5 @@
+interface:
+  display_name: "mmc-workflow-orchestrator"
+  short_description: "Coordinate modeling stages and evidence handoffs"
+  default_prompt: "Use -workflow-orchestrator to coordinate an evidence-driven modeling project from intake to submission audit."
+

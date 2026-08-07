@@ -1,0 +1,5 @@
+interface:
+  display_name: "mmc-problem-intake"
+  short_description: "Normalize problem inputs into stable contracts"
+  default_prompt: "Use -problem-intake to normalize the problem statement, inspect inputs, and define subproblem contracts."
+

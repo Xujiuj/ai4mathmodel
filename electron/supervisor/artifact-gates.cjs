@@ -305,6 +305,112 @@ async function validPdf(file) {
   }
 }
 
+function findArtifact(files, suffix) {
+  const normalized = String(suffix).replace(/\\/g, '/').toLowerCase();
+  return files.find((file) => String(file.relative || '').replace(/\\/g, '/').toLowerCase() === normalized);
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasScalar(value, key) {
+  const candidate = value?.[key];
+  return (typeof candidate === 'string' && candidate.trim().length > 0)
+    || (typeof candidate === 'number' && Number.isFinite(candidate));
+}
+
+function hasCollection(value, key, { allowEmpty = false } = {}) {
+  const candidate = value?.[key];
+  if (Array.isArray(candidate)) return allowEmpty || candidate.length > 0;
+  return isRecord(candidate) && (allowEmpty || Object.keys(candidate).length > 0);
+}
+
+function validRecords(value, key, predicate, { allowEmpty = false } = {}) {
+  const records = value?.[key];
+  return Array.isArray(records) && (allowEmpty || records.length > 0) && records.every((record) => isRecord(record) && predicate(record));
+}
+
+const STRUCTURED_ARTIFACT_VALIDATORS = Object.freeze({
+  'work/01_analysis/data_profile.yaml': (value) => hasScalar(value, 'schema_version')
+    && validRecords(value, 'datasets', (record) => hasScalar(record, 'path')
+      && (hasScalar(record, 'status') || hasCollection(record, 'fields') || hasCollection(record, 'shape'))),
+  'work/01_analysis/model_contract.yaml': (value) => hasScalar(value, 'schema_version')
+    && validRecords(value, 'models', (record) => hasScalar(record, 'subproblem_id')
+      && (hasScalar(record, 'method') || hasScalar(record, 'selected_method'))),
+  'work/01_analysis/validation_plan.yaml': (value) => hasScalar(value, 'schema_version')
+    && validRecords(value, 'checks', (record) => hasScalar(record, 'subproblem_id')
+      && (hasScalar(record, 'method') || hasScalar(record, 'type') || hasScalar(record, 'check'))),
+  'work/01_analysis/figure_plan.yaml': (value) => hasScalar(value, 'schema_version')
+    && validRecords(value, 'figures', (record) => (hasScalar(record, 'id') || hasScalar(record, 'figure_id')) && hasScalar(record, 'claim')),
+  'work/01_analysis/literature/evidence_map.yaml': (value) => hasScalar(value, 'schema_version')
+    && validRecords(value, 'evidence', (record) => hasScalar(record, 'id')
+      && hasScalar(record, 'claim')
+      && hasScalar(record, 'title')
+      && hasScalar(record, 'year')
+      && hasScalar(record, 'status')
+      && hasCollection(record, 'verification_sources')),
+  'work/02_solving/environment.yaml': (value) => hasScalar(value, 'schema_version')
+    && hasCollection(value, 'runtime')
+    && hasCollection(value, 'dependencies', { allowEmpty: true }),
+  'work/02_solving/validation_report.yaml': (value) => hasScalar(value, 'schema_version')
+    && validRecords(value, 'checks', (record) => hasScalar(record, 'id')
+      && hasScalar(record, 'subproblem_id')
+      && hasScalar(record, 'status')
+      && hasCollection(record, 'evidence_paths')),
+  'work/02_solving/figures/figure_manifest.yaml': (value) => hasScalar(value, 'schema_version')
+    && validRecords(value, 'figures', (record) => hasScalar(record, 'figure_id')
+      && hasScalar(record, 'claim')
+      && hasCollection(record, 'source_data')
+      && hasScalar(record, 'generation_source')
+      && hasCollection(record, 'exports')),
+  'work/03_paper/prose_polish_report.yaml': (value) => hasScalar(value, 'schema_version')
+    && hasScalar(value, 'decision')
+    && validRecords(value, 'findings', (record) => hasScalar(record, 'location')
+      && hasScalar(record, 'severity')
+      && hasScalar(record, 'recommendation'), { allowEmpty: true })
+    && hasCollection(value, 'overclaims', { allowEmpty: true })
+    && hasCollection(value, 'unresolved_terminology', { allowEmpty: true }),
+  'work/04_review/release_manifest.yaml': (value) => hasScalar(value, 'schema_version')
+    && String(value.decision || '').toUpperCase() === 'PASS'
+    && validRecords(value, 'files', (record) => hasScalar(record, 'path')
+      && typeof record.sha256 === 'string'
+      && /^[a-f0-9]{64}$/i.test(record.sha256)),
+});
+
+function validateStructuredArtifactSchema(suffix, value) {
+  const normalized = String(suffix).replace(/\\/g, '/').toLowerCase();
+  const validate = STRUCTURED_ARTIFACT_VALIDATORS[normalized];
+  return !validate || validate(value);
+}
+
+async function requireStructuredArtifact(files, suffix, code, label) {
+  const file = findArtifact(files, suffix);
+  if (!file) return { ok: false, code, reason: `Missing required ${label}: ${suffix}.`, artifactRefs: [] };
+  let value;
+  try {
+    value = YAML.parse(await readUtf8(file));
+  } catch {
+    return { ok: false, code: `${code}_INVALID`, reason: `${label} is not valid YAML: ${suffix}.`, artifactRefs: [file.relative] };
+  }
+  if (!value || typeof value !== 'object' || !Object.keys(value).length) {
+    return { ok: false, code: `${code}_EMPTY`, reason: `${label} is empty: ${suffix}.`, artifactRefs: [file.relative] };
+  }
+  if (!validateStructuredArtifactSchema(suffix, value)) {
+    return { ok: false, code: `${code}_SCHEMA_INVALID`, reason: `${label} does not satisfy its required schema: ${suffix}.`, artifactRefs: [file.relative] };
+  }
+  return { ok: true, file, value };
+}
+
+async function requireTextArtifact(files, suffix, code, label, minimumCharacters) {
+  const file = findArtifact(files, suffix);
+  if (!file) return { ok: false, code, reason: `Missing required ${label}: ${suffix}.`, artifactRefs: [] };
+  if (meaningfulCharacterCount(await readUtf8(file)) < minimumCharacters) {
+    return { ok: false, code: `${code}_INCOMPLETE`, reason: `${label} is incomplete: ${suffix}.`, artifactRefs: [file.relative] };
+  }
+  return { ok: true, file };
+}
+
 async function validateStageArtifacts(rootOrView, stage, options = {}) {
   const view = asProjectView(rootOrView);
   const root = view.root;
@@ -348,6 +454,35 @@ async function validateStageArtifacts(rootOrView, stage, options = {}) {
     } catch {
       return { ok: false, code: 'SUBPROBLEMS_CONTRACT_INVALID', reason: 'subproblems.yaml is not valid YAML.', artifactRefs: [subproblemsFile.relative] };
     }
+    const analysisContracts = [
+      ['work/01_analysis/data_profile.yaml', 'DATA_PROFILE_MISSING', 'data profile'],
+      ['work/01_analysis/model_contract.yaml', 'MODEL_CONTRACT_MISSING', 'model contract'],
+      ['work/01_analysis/validation_plan.yaml', 'VALIDATION_PLAN_MISSING', 'validation plan'],
+      ['work/01_analysis/figure_plan.yaml', 'FIGURE_PLAN_MISSING', 'figure plan'],
+      ['work/01_analysis/literature/evidence_map.yaml', 'LITERATURE_EVIDENCE_MISSING', 'literature evidence map'],
+    ];
+    const analysisContractFiles = [];
+    for (const [suffix, code, label] of analysisContracts) {
+      const required = await requireStructuredArtifact(files, suffix, code, label);
+      if (!required.ok) return required;
+      analysisContractFiles.push(required.file);
+    }
+    const bibliography = findArtifact(files, 'work/01_analysis/literature/references.bib');
+    if (!bibliography || meaningfulCharacterCount(await readUtf8(bibliography)) < 40) {
+      return { ok: false, code: 'LITERATURE_BIBLIOGRAPHY_MISSING', reason: 'Verified literature bibliography is missing or empty.', artifactRefs: bibliography ? [bibliography.relative] : [] };
+    }
+    const analysisNarratives = [
+      ['work/01_analysis/intake_risks.md', 'INTAKE_RISKS_MISSING', 'intake risk register', 80],
+      ['work/01_analysis/model_design.md', 'MODEL_DESIGN_MISSING', 'model design rationale', 300],
+      ['work/01_analysis/literature/search_log.md', 'LITERATURE_SEARCH_LOG_MISSING', 'literature search log', 120],
+      ['work/01_analysis/literature/method_notes.md', 'LITERATURE_METHOD_NOTES_MISSING', 'literature method notes', 200],
+    ];
+    const analysisNarrativeFiles = [];
+    for (const [suffix, code, label, minimumCharacters] of analysisNarratives) {
+      const required = await requireTextArtifact(files, suffix, code, label, minimumCharacters);
+      if (!required.ok) return required;
+      analysisNarrativeFiles.push(required.file);
+    }
     const contractValidation = validateSubproblemsContract(subproblemsContract);
     if (!contractValidation.ok) {
       return contractFailure(contractValidation, [subproblemsFile.relative]);
@@ -356,7 +491,11 @@ async function validateStageArtifacts(rootOrView, stage, options = {}) {
     if (!inputValidation.ok) {
       return contractFailure(inputValidation, [subproblemsFile.relative]);
     }
-    return { ok: true, summary: '赛题分析文档与结构化子问题合同已通过检查。', artifactRefs: [document, problemText, pdf, subproblemsFile].filter(Boolean).map((file) => file.relative) };
+    return {
+      ok: true,
+      summary: 'Analysis, intake, literature, model, validation, and figure contracts passed validation.',
+      artifactRefs: [document, problemText, pdf, subproblemsFile, bibliography, ...analysisContractFiles, ...analysisNarrativeFiles].filter(Boolean).map((file) => file.relative),
+    };
   }
   if (stage === 'solving') {
     const files = await listFiles(view, 'work/02_solving');
@@ -422,10 +561,29 @@ async function validateStageArtifacts(rootOrView, stage, options = {}) {
     if (!aggregateValidation.ok) {
       return contractFailure(aggregateValidation, [aggregate.relative]);
     }
+    const solvingContracts = [
+      ['work/02_solving/environment.yaml', 'ENVIRONMENT_CONTRACT_MISSING', 'runtime environment contract'],
+      ['work/02_solving/validation_report.yaml', 'VALIDATION_REPORT_MISSING', 'result validation report'],
+      ['work/02_solving/figures/figure_manifest.yaml', 'FIGURE_MANIFEST_MISSING', 'scientific figure manifest'],
+    ];
+    const solvingContractFiles = [];
+    for (const [suffix, code, label] of solvingContracts) {
+      const required = await requireStructuredArtifact(files, suffix, code, label);
+      if (!required.ok) return required;
+      solvingContractFiles.push(required.file);
+    }
+    const validationSummary = await requireTextArtifact(
+      files,
+      'work/02_solving/validation_summary.md',
+      'VALIDATION_SUMMARY_MISSING',
+      'validation summary',
+      250,
+    );
+    if (!validationSummary.ok) return validationSummary;
     return {
       ok: true,
       summary: `已验证 ${results.length} 组子问题结果、汇总实验数据和 ${sources.length} 个可复现代码载体。`,
-      artifactRefs: [subproblemsFile, aggregate, ...results, ...sources].filter(Boolean).slice(0, 30).map((file) => file.relative),
+      artifactRefs: [subproblemsFile, aggregate, ...results, ...sources, ...solvingContractFiles, validationSummary.file].filter(Boolean).slice(0, 30).map((file) => file.relative),
     };
   }
   if (stage === 'paper' || stage === 'review') {
@@ -524,16 +682,37 @@ async function validateStageArtifacts(rootOrView, stage, options = {}) {
     if (!evidenceValidation.ok) {
       return contractFailure(evidenceValidation, [subproblemsFile.relative, evidenceManifestFile.relative]);
     }
+    const prosePolishReport = await requireStructuredArtifact(
+      paperFiles,
+      'work/03_paper/prose_polish_report.yaml',
+      'PROSE_POLISH_REPORT_MISSING',
+      'independent prose polish report',
+    );
+    if (!prosePolishReport.ok) return prosePolishReport;
     const sourceRefs = [markdown?.relative, tex.relative, pdf.relative].filter(Boolean);
-    if (stage === 'paper') return { ok: true, summary: '论文源码、证据清单、引用图片与可打开 PDF 已通过门禁。', artifactRefs: [...sourceRefs, evidenceManifestFile.relative, ...referencedFigures.files.map((file) => file.relative)] };
+    if (stage === 'paper') return {
+      ok: true,
+      summary: 'Paper source, evidence, citations, figures, prose audit, and PDF passed validation.',
+      artifactRefs: [...sourceRefs, evidenceManifestFile.relative, prosePolishReport.file.relative, ...referencedFigures.files.map((file) => file.relative)],
+    };
 
     const reviewFiles = await listFiles(view, 'work/04_review');
+    const releaseManifest = await requireStructuredArtifact(reviewFiles, 'work/04_review/release_manifest.yaml', 'RELEASE_MANIFEST_MISSING', 'release manifest');
+    if (!releaseManifest.ok) return releaseManifest;
+    const figureAudit = findArtifact(reviewFiles, 'work/04_review/figure_audit.md');
+    if (!figureAudit || meaningfulCharacterCount(await readUtf8(figureAudit)) < 200) {
+      return { ok: false, code: 'FIGURE_AUDIT_MISSING', reason: 'Final-size figure audit is missing or incomplete.', artifactRefs: figureAudit ? [figureAudit.relative] : [] };
+    }
     const audit = [...reviewFiles, ...paperFiles].find((file) => /(?:paper.*audit|quality.*audit|audit.*paper).*\.md$/i.test(file.name));
     if (!audit) return { ok: false, code: 'AUDIT_MISSING', reason: '质量审查未生成有效审计报告。', artifactRefs: [tex.relative, pdf.relative] };
     if (meaningfulCharacterCount(await readUtf8(audit)) < 800) {
       return { ok: false, code: 'AUDIT_TOO_SHORT', reason: '质量审查报告过短，未覆盖内容、排版、图表与真实性检查。', artifactRefs: [tex.relative, pdf.relative, audit.relative] };
     }
-    return { ok: true, summary: '最终论文、证据清单与质量审计报告均已验证。', artifactRefs: [...sourceRefs, evidenceManifestFile.relative, audit.relative] };
+    return {
+      ok: true,
+      summary: 'Final paper, evidence, visual audit, quality audit, and release manifest passed validation.',
+      artifactRefs: [...sourceRefs, evidenceManifestFile.relative, prosePolishReport.file.relative, audit.relative, figureAudit.relative, releaseManifest.file.relative],
+    };
   }
   return { ok: false, code: 'UNKNOWN_STAGE', reason: `未知阶段：${stage}`, artifactRefs: [] };
 }
@@ -544,5 +723,6 @@ module.exports = {
   ensureWorkspaceInitialized,
   evaluateStageGate,
   listFiles,
+  validateStructuredArtifactSchema,
   validateStageArtifacts,
 };

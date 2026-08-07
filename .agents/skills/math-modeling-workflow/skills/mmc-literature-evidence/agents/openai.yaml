@@ -1,0 +1,5 @@
+interface:
+  display_name: "mmc-literature-evidence"
+  short_description: "Build verified literature and citation evidence"
+  default_prompt: "Use -literature-evidence to build a verified literature and citation evidence map for the modeling project."
+

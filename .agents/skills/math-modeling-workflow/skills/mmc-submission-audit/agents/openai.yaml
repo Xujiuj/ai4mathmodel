@@ -1,0 +1,5 @@
+interface:
+  display_name: "mmc-submission-audit"
+  short_description: "Audit final papers for submission readiness"
+  default_prompt: "Use -submission-audit to run an independent submission-readiness audit and produce final deliverables."
+

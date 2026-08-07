@@ -1,0 +1,5 @@
+interface:
+  display_name: "mmc-result-validation"
+  short_description: "Challenge results with credibility checks"
+  default_prompt: "Use -result-validation to challenge numerical results with baselines, diagnostics, and robustness checks."
+

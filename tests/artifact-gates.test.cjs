@@ -4,13 +4,53 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 
-const { ensureWorkspaceInitialized, validateStageArtifacts } = require('../electron/supervisor/artifact-gates.cjs');
+const {
+  ensureWorkspaceInitialized,
+  validateStageArtifacts,
+  validateStructuredArtifactSchema,
+} = require('../electron/supervisor/artifact-gates.cjs');
 
 async function fixture(context) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'modeling-artifact-gates-'));
   context.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
+
+async function writeEnhancedAnalysisContracts(directory) {
+  const literature = path.join(directory, 'literature');
+  await fs.mkdir(literature, { recursive: true });
+  await Promise.all([
+    fs.writeFile(path.join(directory, 'data_profile.yaml'), 'schema_version: 1\ndatasets:\n  - path: inputs/problem/statement.txt\n    status: profiled\n', 'utf8'),
+    fs.writeFile(path.join(directory, 'model_contract.yaml'), 'schema_version: 1\nmodels:\n  - subproblem_id: sp-1\n    method: validated baseline\n', 'utf8'),
+    fs.writeFile(path.join(directory, 'validation_plan.yaml'), 'schema_version: 1\nchecks:\n  - subproblem_id: sp-1\n    method: baseline comparison\n', 'utf8'),
+    fs.writeFile(path.join(directory, 'figure_plan.yaml'), 'schema_version: 1\nfigures:\n  - id: fig-1\n    claim: model comparison\n', 'utf8'),
+    fs.writeFile(path.join(literature, 'evidence_map.yaml'), 'schema_version: 1\nevidence:\n  - id: lit-1\n    claim: The method is applicable.\n    title: Verified modeling method\n    year: 2025\n    status: verified\n    verification_sources: [Crossref]\n', 'utf8'),
+    fs.writeFile(path.join(literature, 'references.bib'), '@article{verified, title={Verified modeling method}, author={Author}, journal={Journal}, year={2025}}\n', 'utf8'),
+    fs.writeFile(path.join(directory, 'intake_risks.md'), '# Intake risks\n\nAmbiguity, missing-data exposure, conservative interpretation, and resolution checks are recorded here. '.repeat(3), 'utf8'),
+    fs.writeFile(path.join(directory, 'model_design.md'), '# Model design\n\nCandidate methods, equations, assumptions, baseline, interfaces, and failure conditions are compared. '.repeat(12), 'utf8'),
+    fs.writeFile(path.join(literature, 'search_log.md'), '# Search log\n\nQuery, registry, date, scope, inclusion rationale, and exclusion rationale are recorded. '.repeat(5), 'utf8'),
+    fs.writeFile(path.join(literature, 'method_notes.md'), '# Method notes\n\nApplicability, assumptions, evidence, strengths, limitations, and known failure modes are recorded. '.repeat(8), 'utf8'),
+  ]);
+}
+
+test('structured workflow contracts reject arbitrary YAML objects', () => {
+  const valid = {
+    'work/01_analysis/data_profile.yaml': { schema_version: 1, datasets: [{ path: 'inputs/data.csv', status: 'profiled' }] },
+    'work/01_analysis/model_contract.yaml': { schema_version: 1, models: [{ subproblem_id: 'sp-1', method: 'baseline' }] },
+    'work/01_analysis/validation_plan.yaml': { schema_version: 1, checks: [{ subproblem_id: 'sp-1', method: 'holdout' }] },
+    'work/01_analysis/figure_plan.yaml': { schema_version: 1, figures: [{ id: 'fig-1', claim: 'comparison' }] },
+    'work/01_analysis/literature/evidence_map.yaml': { schema_version: 1, evidence: [{ id: 'lit-1', claim: 'supported', title: 'Paper', year: 2025, status: 'verified', verification_sources: ['Crossref'] }] },
+    'work/02_solving/environment.yaml': { schema_version: 1, runtime: { name: 'python', version: '3.11' }, dependencies: [] },
+    'work/02_solving/validation_report.yaml': { schema_version: 1, checks: [{ id: 'check-1', subproblem_id: 'sp-1', status: 'passed', evidence_paths: ['work/result.yaml'] }] },
+    'work/02_solving/figures/figure_manifest.yaml': { schema_version: 1, figures: [{ figure_id: 'fig-1', claim: 'comparison', source_data: ['work/data.csv'], generation_source: 'work/plot.py', exports: ['work/fig.pdf'] }] },
+    'work/03_paper/prose_polish_report.yaml': { schema_version: 1, decision: 'PASS', findings: [], overclaims: [], unresolved_terminology: [] },
+    'work/04_review/release_manifest.yaml': { schema_version: 1, decision: 'PASS', files: [{ path: 'work/03_paper/main.pdf', sha256: 'a'.repeat(64) }] },
+  };
+  for (const [artifact, value] of Object.entries(valid)) {
+    assert.equal(validateStructuredArtifactSchema(artifact, value), true, artifact);
+    assert.equal(validateStructuredArtifactSchema(artifact, { foo: 'bar' }), false, artifact);
+  }
+});
 
 test('initialization copies the complete uploaded template into an empty paper workspace', async (context) => {
   const root = await fixture(context);
@@ -113,10 +153,49 @@ test('accepts equivalent Chinese academic headings in a complete analysis contra
     '    primary_method: Validated mathematical modeling.',
     '    validation_requirements: [Compare against a baseline.]',
   ].join('\n'), 'utf8');
+  await writeEnhancedAnalysisContracts(directory);
 
   const result = await validateStageArtifacts(root, 'analysis');
 
   assert.equal(result.ok, true, result.reason || '');
+
+  await fs.writeFile(path.join(directory, 'data_profile.yaml'), 'foo: bar\n', 'utf8');
+  const malformed = await validateStageArtifacts(root, 'analysis');
+  assert.equal(malformed.ok, false);
+  assert.equal(malformed.code, 'DATA_PROFILE_MISSING_SCHEMA_INVALID');
+});
+
+test('requires the enhanced evidence and model contracts after the legacy analysis contract passes', async (context) => {
+  const root = await fixture(context);
+  const directory = path.join(root, 'work', '01_analysis');
+  await fs.mkdir(directory, { recursive: true });
+  const headings = [
+    'Problem restatement', 'Data understanding', 'Model assumptions', 'Notation and units', 'Method comparison', 'Validation design',
+  ].map((heading) => `# ${heading}\n${'Reproducible technical analysis with constraints, evidence, and validation. '.repeat(120)}`).join('\n\n');
+  await fs.writeFile(path.join(directory, 'analysis.md'), headings, 'utf8');
+  await fs.writeFile(path.join(directory, 'problem_text.md'), 'Normalized problem statement and data inventory. '.repeat(40), 'utf8');
+  await fs.writeFile(path.join(directory, 'analysis.pdf'), Buffer.concat([Buffer.from('%PDF-1.7\n'), Buffer.alloc(2048)]));
+  await fs.mkdir(path.join(root, 'inputs', 'problem'), { recursive: true });
+  await fs.writeFile(path.join(root, 'inputs', 'problem', 'statement.txt'), 'modeling problem', 'utf8');
+  await fs.writeFile(path.join(directory, 'subproblems.yaml'), [
+    'schema_version: 1',
+    'subproblems:',
+    '  - id: sp-1',
+    '    question: Complete the stated modeling task.',
+    '    inputs: [inputs/problem/statement.txt]',
+    '    outputs: [work/02_solving/sub_problem_1/results.yaml]',
+    '    depends_on: []',
+    '    primary_method: Validated mathematical modeling.',
+    '    validation_requirements: [Compare against a baseline.]',
+  ].join('\n'), 'utf8');
+  const collision = path.join(directory, 'nested', 'work', '01_analysis');
+  await fs.mkdir(collision, { recursive: true });
+  await fs.writeFile(path.join(collision, 'data_profile.yaml'), 'schema_version: 1\ndatasets: []\n', 'utf8');
+
+  const result = await validateStageArtifacts(root, 'analysis');
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'DATA_PROFILE_MISSING');
 });
 
 test('requires the versioned subproblem handoff after existing analysis checks pass', async (context) => {
